@@ -116,8 +116,9 @@ def read_all(stage: str) -> dict[str, pd.DataFrame]:
     t = {name: read_table(stage, name) for name in CORE_TABLES}
     try:
         t["documents"] = read_table(stage, "documents")
-    except Exception:  # no documents ingested yet (missing file or table)
-        pass
+    except Exception as e:  # only "not ingested yet" (missing file / table 42P01); anything else must not drop documents
+        if not isinstance(e, FileNotFoundError) and getattr(e, "sqlstate", None) != "42P01":
+            raise
     return t
 
 

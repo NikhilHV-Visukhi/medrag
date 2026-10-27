@@ -7,7 +7,7 @@ import pandas as pd
 
 from medrag.data import catalog as C
 from medrag.providers.llms import LLM, get_llm
-from medrag.retrieval.retriever import Result, Retriever
+from medrag.retrieval.retriever import FILTER_ORDER, Result, Retriever
 
 SYSTEM = """You are a clinical assistant answering questions about a hospital's radiology records.
 
@@ -40,7 +40,9 @@ def computed_facts(r: Result, retriever: Retriever) -> str:
     f, meta = r.filters, retriever.meta
     if not (f.aggregate or f.patient_ids or f.latest):
         return ""
-    scope = meta if r.subset is None else meta.iloc[r.subset]
+    # Count with every filter applied, even when search relaxed one to find something to show:
+    # "how many MRIs" for a patient with no MRI must be 0, not the count of their other studies.
+    scope = meta[retriever._mask(f, set(FILTER_ORDER))]
     st = scope[(scope["doc_type"] == "study") & (scope["part"] == 0)]
     if f.findings:  # count by what the radiologist reported, not by the (sometimes wrong) AI label
         st = st[retriever.finding_mask(f.findings).loc[st.index]]

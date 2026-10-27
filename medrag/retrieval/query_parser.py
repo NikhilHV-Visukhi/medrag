@@ -124,7 +124,8 @@ class QueryParser:
 
         for syn in sorted(C.MODALITY_SYNONYMS, key=len, reverse=True):
             if re.search(rf"(?<![a-z]){re.escape(syn)}(?![a-z])", ql):
-                if syn in ("us", "mr", "mg", "pet") and not re.search(rf"\b{syn}\b", q):  # 'us' as a word is ambiguous
+                # Short codes count only in capitals: "US abdomen" is ultrasound, "tell us" is not.
+                if syn in ("us", "mr", "mg", "pet") and not re.search(rf"\b{syn.upper()}\b", q):
                     continue
                 f.modality = C.MODALITY_SYNONYMS[syn]
                 break

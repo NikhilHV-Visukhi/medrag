@@ -46,11 +46,16 @@ def clean(t: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], list[str
     p.loc[bad_dob, "date_of_birth"] = pd.NaT
 
     # Same MRN under several patient ids = one person registered twice. Keep the lowest id, remap the rest.
+    # Patients without an MRN cannot be matched, so they are kept as they are.
     p = p.sort_values("patient_id")
-    keep_id = p.groupby("mrn")["patient_id"].transform("min")
-    remap = dict(zip(p.loc[keep_id != p["patient_id"], "patient_id"], keep_id[keep_id != p["patient_id"]]))
+    has_mrn = p["mrn"].fillna("").astype(str).str.strip() != ""
+    d = p[has_mrn]
+    keep_id = d.groupby("mrn")["patient_id"].transform("min")
+    remap = dict(zip(d.loc[keep_id != d["patient_id"], "patient_id"], keep_id[keep_id != d["patient_id"]]))
     # Fill gaps in the surviving record from its duplicates before dropping them.
-    p = p.groupby("mrn", as_index=False).agg({c: "first" for c in p.columns if c != "mrn"} | {"patient_id": "min"})
+    d = d.groupby("mrn", as_index=False).agg({c: "first" for c in d.columns if c != "mrn"} | {"patient_id": "min"})
+    note("patients: kept without MRN (cannot be de-duplicated)", int((~has_mrn).sum()))
+    p = pd.concat([d, p[~has_mrn]], ignore_index=True)
     note("patients: merged duplicate registrations (same MRN)", len(remap))
     t_cond = t["conditions"].copy()
     t_cond["patient_id"] = t_cond["patient_id"].replace(remap)

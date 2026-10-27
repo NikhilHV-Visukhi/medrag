@@ -2,9 +2,12 @@
 
 One index directory per embedding model, so different models can be built and compared side by side.
 Re-building is incremental: vectors for chunks whose text has not changed are reused, only new or
-changed chunks are embedded.
+changed chunks are embedded. Each build writes its own files and switches manifest.json over last, so an
+app reading the previous build (vectors are memory-mapped) is never overwritten or shown half a build.
 """
 import json
+import os
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -26,15 +29,31 @@ def tokenize(texts: list[str]):
     return bm25s.tokenize(texts, stopwords="en", stemmer=STEMMER, show_progress=False)
 
 
+def _files(path: Path, version: str | None) -> dict[str, Path]:
+    sfx = f"-{version}" if version else ""  # no version: an index built before builds were versioned
+    return {k: path / f"{k}{sfx}{ext}" for k, ext in (("chunks", ".parquet"), ("vectors", ".npy"), ("dense", ".faiss"), ("bm25", ""))}
+
+
+def _remove_old_builds(path: Path, version: str) -> None:
+    current = set(_files(path, version).values())
+    for p in path.iterdir():
+        if p.name.split("-")[0].split(".")[0] in ("chunks", "vectors", "dense", "bm25") and p not in current:
+            try:
+                shutil.rmtree(p) if p.is_dir() else p.unlink()
+            except OSError:  # still open in a running app (Windows); the next build removes it
+                pass
+
+
 def build(chunks: pd.DataFrame, embedder: Embedder, path: Path, batch: int = 256) -> dict:
     path.mkdir(parents=True, exist_ok=True)
     started = time.time()
 
     old: dict[str, np.ndarray] = {}
-    if (path / "chunks.parquet").exists() and (path / "vectors.npy").exists():
-        old_ids = pd.read_parquet(path / "chunks.parquet", columns=["chunk_id"])["chunk_id"]
-        old_vecs = np.load(path / "vectors.npy")
-        old = dict(zip(old_ids, old_vecs))
+    if (path / "manifest.json").exists():
+        prev = _files(path, json.loads((path / "manifest.json").read_text()).get("version"))
+        if prev["chunks"].exists() and prev["vectors"].exists():
+            old_ids = pd.read_parquet(prev["chunks"], columns=["chunk_id"])["chunk_id"]
+            old = dict(zip(old_ids, np.load(prev["vectors"])))
 
     chunks = chunks.reset_index(drop=True)
     todo = [i for i, cid in enumerate(chunks["chunk_id"]) if cid not in old]
@@ -49,8 +68,10 @@ def build(chunks: pd.DataFrame, embedder: Embedder, path: Path, batch: int = 256
         idx = todo[start:start + batch]
         vecs[idx] = embedder.embed_documents([texts[i] for i in idx])
 
-    np.save(path / "vectors.npy", vecs)
-    chunks.to_parquet(path / "chunks.parquet", index=False)
+    version = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    f = _files(path, version)
+    np.save(f["vectors"], vecs)
+    chunks.to_parquet(f["chunks"], index=False)
 
     if len(chunks) > HNSW_THRESHOLD:
         index = faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
@@ -58,18 +79,21 @@ def build(chunks: pd.DataFrame, embedder: Embedder, path: Path, batch: int = 256
     else:
         index = faiss.IndexFlatIP(dim)
     index.add(vecs)
-    faiss.write_index(index, str(path / "dense.faiss"))
+    faiss.write_index(index, str(f["dense"]))
 
     bm25 = bm25s.BM25(k1=1.2, b=0.75)
     bm25.index(tokenize(texts), show_progress=False)
-    bm25.save(str(path / "bm25"))
+    bm25.save(str(f["bm25"]))
 
     manifest = {
         "provider": embedder.name, "model": embedder.model, "dim": dim, "chunks": len(chunks),
         "embedded_now": len(todo), "reused": len(chunks) - len(todo), "dense_index": type(index).__name__,
-        "built_at": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started, 1),
+        "built_at": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started, 1), "version": version,
     }
-    (path / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    tmp = path / "manifest.json.tmp"
+    tmp.write_text(json.dumps(manifest, indent=2))
+    os.replace(tmp, path / "manifest.json")  # atomic: readers see the old build or the new one, never a mix
+    _remove_old_builds(path, version)
     return manifest
 
 
@@ -79,12 +103,13 @@ class Index:
             raise FileNotFoundError(f"No index at {path}. Run: python -m medrag index")
         self.path = path
         self.manifest = json.loads((path / "manifest.json").read_text())
-        self.meta = pd.read_parquet(path / "chunks.parquet")
-        self.vectors = np.load(path / "vectors.npy", mmap_mode="r")
-        self.dense = faiss.read_index(str(path / "dense.faiss"))
+        f = _files(path, self.manifest.get("version"))
+        self.meta = pd.read_parquet(f["chunks"])
+        self.vectors = np.load(f["vectors"], mmap_mode="r")
+        self.dense = faiss.read_index(str(f["dense"]))
         if hasattr(self.dense, "hnsw"):
             self.dense.hnsw.efSearch = 128
-        self.bm25 = bm25s.BM25.load(str(path / "bm25"))
+        self.bm25 = bm25s.BM25.load(str(f["bm25"]))
         self._vocab = self.bm25.vocab_dict
 
     def dense_search(self, qvec: np.ndarray, k: int, rows: np.ndarray | None = None) -> list[tuple[int, float]]:

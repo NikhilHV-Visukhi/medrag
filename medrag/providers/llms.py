@@ -1,5 +1,6 @@
 """Chat LLM providers behind one interface: stream(system, user) yields text; complete() returns it all."""
 import json
+import time
 from collections.abc import Iterator
 
 from medrag.config import get_settings
@@ -21,8 +22,15 @@ class LLM:
     def stream(self, system: str, user: str, max_tokens: int = 1500) -> Iterator[str]:
         raise NotImplementedError
 
-    def complete(self, system: str, user: str, max_tokens: int = 1500) -> str:
-        return "".join(self.stream(system, user, max_tokens))
+    def complete(self, system: str, user: str, max_tokens: int = 1500, retries: int = 4) -> str:
+        for attempt in range(retries + 1):
+            try:
+                return "".join(self.stream(system, user, max_tokens))
+            except Exception as e:  # free tiers rate-limit often: wait and retry on 429 / quota errors only
+                msg = str(e)
+                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit")):
+                    raise
+                time.sleep(15 * (attempt + 1))
 
 
 class OllamaLLM(LLM):

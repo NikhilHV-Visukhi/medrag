@@ -19,6 +19,7 @@ from medrag.retrieval.expansion import expand as expand_query, impression_patter
 from medrag.retrieval.query_parser import Filters, QueryParser
 
 MODES = ("bm25", "dense", "hybrid", "hybrid+rerank")
+FILTER_ORDER = ["abnormal", "documents", "priority", "dates", "body_part", "modality", "patient"]  # first is relaxed first
 
 
 @dataclass
@@ -106,7 +107,7 @@ class Retriever:
 
     def filter_rows(self, f: Filters, notes: list[str]) -> np.ndarray | None:
         """Rows matching the filters; drops the least important filter until something matches."""
-        order = ["abnormal", "documents", "priority", "dates", "body_part", "modality", "patient"]
+        order = FILTER_ORDER
         use = set(order)
         while use:
             m = self._mask(f, use)

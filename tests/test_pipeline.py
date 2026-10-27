@@ -59,8 +59,12 @@ def test_incremental_rebuild_reuses_vectors(env, built):
     from medrag.index.store import build
     from medrag.providers.embeddings import get_embedder
 
+    from medrag.index.store import Index
+
     m = build(built[3], get_embedder(), env.index_path())
     assert m["embedded_now"] == 0 and m["reused"] == m["chunks"]
+    assert len(list(env.index_path().glob("vectors*.npy"))) == 1  # the previous build's files are cleaned up
+    assert len(Index(env.index_path()).meta) == m["chunks"]
 
 
 def test_parser_and_retrieval(env, built):
@@ -159,3 +163,45 @@ def test_chunking_splits_long_text():
     assert len(chunks) > 3 and all(c.startswith("Patient: X") for c in chunks)
     assert all(len(c.split()) <= 140 for c in chunks)
     assert isinstance(pd.Series(chunks), pd.Series)
+
+
+def test_count_is_zero_when_patient_lacks_the_modality(env, built):
+    from medrag.rag.answer import computed_facts
+    from medrag.retrieval.retriever import Retriever
+
+    ret = Retriever()
+    st = ret.meta[ret.meta["doc_type"] == "study"]
+    no_mri = set(st["patient_id"]) - set(st.loc[st["modality"] == "MRI", "patient_id"])
+    mrn = st.loc[st["patient_id"].isin(no_mri), "mrn"].iloc[0]
+    r = ret.search(f"How many MRI studies does {mrn} have?")
+    assert r.filters.modality == "MRI" and any("relaxed" in n for n in r.notes)  # search still shows other studies
+    assert "Matching studies: 0 " in computed_facts(r, ret)  # but the count is not taken from them
+
+
+def test_short_modality_codes_only_in_capitals():
+    from medrag.retrieval.query_parser import QueryParser
+
+    meta = pd.DataFrame({"patient_id": [1], "patient_name": ["John Smith"], "mrn": ["MRN0000001"],
+                         "study_id": [pd.NA], "text": ["x"], "specialty": [None]})
+    qp = QueryParser(meta)
+    assert qp.parse("Show the US abdomen for John Smith").modality == "US"
+    assert qp.parse("Any PET scans last year?").modality == "PET"
+    assert qp.parse("Can you tell us about John Smith").modality is None
+    assert qp.parse("Mr Smith had an ultrasound").modality == "US"
+
+
+def test_clean_keeps_patients_without_mrn():
+    from medrag.data.clean import clean
+    from medrag.data.store import COLUMNS
+
+    p = pd.DataFrame({"patient_id": [1, 2, 3], "mrn": ["MRN1", None, "MRN1"], "full_name": ["Ann Lee", "Bob Ray", "Ann Lee"],
+                      "gender": ["F", "M", "F"], "date_of_birth": pd.to_datetime(["1980-01-01", "1970-01-01", "1980-01-01"]),
+                      "blood_group": None, "city": None})
+    s = pd.DataFrame({"study_id": [10, 20, 30], "patient_id": [1, 2, 3], "accession": ["a", "b", "c"],
+                      "study_date": pd.to_datetime(["2024-01-01"] * 3), "modality": "CT", "body_part": "chest",
+                      "indication": "x", "priority": "routine", "referring_physician": None})
+    empty = {k: pd.DataFrame(columns=list(COLUMNS[k])) for k in ("conditions", "ai_analysis", "reports")}
+    out, log = clean({"patients": p, "studies": s} | empty)
+    assert sorted(out["patients"]["patient_id"]) == [1, 2]  # 3 merged into 1, 2 kept despite no MRN
+    assert sorted(out["studies"]["patient_id"]) == [1, 1, 2]
+    assert "patients: merged duplicate registrations (same MRN): 1" in log

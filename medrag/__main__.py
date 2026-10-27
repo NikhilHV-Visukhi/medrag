@@ -111,11 +111,18 @@ def cmd_ask(a):
 
 
 def _raw_signature() -> str:
+    """Changes on any insert, update or delete in the raw stage. Cheap: no table data is read."""
     from medrag.data import store
 
-    t = store.read_all("raw")
-    sig = {k: [len(v), str(v.iloc[:, 0].max()) if len(v) else ""] for k, v in t.items()}
-    return hashlib.md5(json.dumps(sig).encode()).hexdigest()
+    s = get_settings()
+    if s.data_backend == "parquet":
+        sig = sorted((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in s.raw_dir.glob("*.parquet"))
+    else:
+        with store.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables "
+                        "WHERE schemaname = %s ORDER BY relname", (store.SCHEMAS["raw"],))
+            sig = cur.fetchall()
+    return hashlib.md5(json.dumps(sig, default=str).encode()).hexdigest()
 
 
 def cmd_watch(a):

@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Generated data, indexes, reports
+data/raw/
+data/clean/
+data/source/
+indexes/
+reports/
+*.pkl
+*.npy
+*.faiss
+sync_state.db
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

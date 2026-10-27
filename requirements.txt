@@ -1,0 +1,29 @@
+# Core
+numpy
+pandas
+pyarrow
+tabulate
+pydantic-settings
+python-dotenv
+tqdm
+faker
+rapidfuzz
+
+# Database
+psycopg[binary]
+
+# Indexing / retrieval
+faiss-cpu
+bm25s
+PyStemmer
+sentence-transformers
+
+# Providers (only the ones you use need API keys)
+httpx
+openai
+anthropic
+google-genai
+
+# UI / tests
+streamlit
+pytest

@@ -15,6 +15,7 @@ import pandas as pd
 from medrag.config import get_settings
 from medrag.index.store import Index
 from medrag.providers.embeddings import get_embedder
+from medrag.retrieval.expansion import expand as expand_query, impression_pattern
 from medrag.retrieval.query_parser import Filters, QueryParser
 
 MODES = ("bm25", "dense", "hybrid", "hybrid+rerank")
@@ -61,7 +62,7 @@ class Reranker:
 
 class Retriever:
     def __init__(self, index: Index | None = None, embed_provider: str | None = None, embed_model: str | None = None,
-                 rerank_model: str | None = None):
+                 rerank_model: str | None = None, rerank_blend: str | None = None):
         s = get_settings()
         self.index = index or Index(s.index_path(embed_provider, embed_model))
         self.meta = self.index.meta
@@ -69,6 +70,7 @@ class Retriever:
         self.parser = QueryParser(self.meta)
         self.rerank_model = rerank_model if rerank_model is not None else s.rerank_model
         self._reranker = None
+        self.rerank_blend = rerank_blend or s.rerank_blend
         is_study = self.meta["doc_type"] == "study"
         imp = self.meta["impression"].fillna("").str.lower()
         self._abnormal = is_study & ~imp.str.contains("no acute abnormality") & (imp != "")
@@ -96,11 +98,15 @@ class Retriever:
             m &= self.meta["study_date"] <= f.date_to
         if "abnormal" in use and f.abnormal_only:
             m &= self._abnormal
+        if "documents" in use and f.documents:
+            m &= self.meta["doc_type"].isin(["document", "patient"])
+        if "documents" in use and f.specialty:
+            m &= (self.meta["specialty"] == f.specialty) | (self.meta["doc_type"] == "patient")
         return m
 
     def filter_rows(self, f: Filters, notes: list[str]) -> np.ndarray | None:
         """Rows matching the filters; drops the least important filter until something matches."""
-        order = ["abnormal", "priority", "dates", "body_part", "modality", "patient"]
+        order = ["abnormal", "documents", "priority", "dates", "body_part", "modality", "patient"]
         use = set(order)
         while use:
             m = self._mask(f, use)
@@ -114,28 +120,46 @@ class Retriever:
         return None
 
     # ---------------- search ----------------
+    def finding_mask(self, labels: list[str]) -> pd.Series:
+        """Studies whose report impression shows any of the given findings (radiologist wording)."""
+        imp = self.meta["impression"].fillna("")
+        pattern = "|".join(f"(?:{impression_pattern(lbl)})" for lbl in labels)
+        return imp.str.contains(pattern, case=False, regex=True)
+
     def search(self, query: str, k: int | None = None, mode: str = "hybrid+rerank", candidates: int | None = None,
-               use_filters: bool = True) -> Result:
+               use_filters: bool = True, expand: bool = True) -> Result:
         s = get_settings()
         k = k or s.top_k
         n_cand = candidates or s.candidates
         notes: list[str] = []
         f = self.parser.parse(query)
         rows = self.filter_rows(f, notes) if use_filters else None
+        q = query
+        if expand:
+            q, exp_notes = expand_query(query)
+            notes += exp_notes
 
         rankings = {}
         if mode in ("dense", "hybrid", "hybrid+rerank"):
-            rankings["dense"] = self.index.dense_search(self.embedder.embed_query(query), n_cand, rows)
+            rankings["dense"] = self.index.dense_search(self.embedder.embed_query(q), n_cand, rows)
         if mode in ("bm25", "hybrid", "hybrid+rerank"):
-            rankings["bm25"] = self.index.sparse_search(query, n_cand, rows)
+            rankings["bm25"] = self.index.sparse_search(q, n_cand, rows)
         hits = rrf(rankings) if len(rankings) > 1 else [Hit(r, sc, list(rankings)) for r, sc in next(iter(rankings.values()))]
 
         if mode == "hybrid+rerank" and self.reranker and hits:
-            pool = hits[: max(n_cand, k * 3)]
-            scores = self.reranker.score(query, self.meta["text"].iloc[[h.row for h in pool]].tolist())
-            for h, sc in zip(pool, scores):
-                h.score = float(sc)
-            hits = sorted(pool, key=lambda h: -h.score)
+            pool = hits[: max(s.rerank_pool, k)]
+            scores = self.reranker.score(q, self.meta["text"].iloc[[h.row for h in pool]].tolist())
+            if self.rerank_blend == "fuse":
+                # Merge the reranker's order with the hybrid order, so a reranker trained on another domain
+                # cannot throw away what the first-stage search got right.
+                by_rerank = [(pool[i].row, float(scores[i])) for i in np.argsort(-scores)]
+                fused = rrf({"hybrid": [(h.row, h.score) for h in pool], "rerank": by_rerank})
+                src = {h.row: h.sources for h in pool}
+                hits = [Hit(h.row, h.score, src[h.row]) for h in fused]
+            else:
+                for h, sc in zip(pool, scores):
+                    h.score = float(sc)
+                hits = sorted(pool, key=lambda h: -h.score)
 
         hits = hits[:k]
 

@@ -96,6 +96,35 @@ class OpenAILLM(LLM):
                 yield ev.choices[0].delta.content
 
 
+class GroqLLM(OpenAILLM):
+    """Groq: free tier, OpenAI-compatible API (e.g. llama-3.3-70b-versatile). Key: GROQ_API_KEY."""
+    provider = "groq"
+    base_url = "https://api.groq.com/openai/v1"
+    key_field = "groq_api_key"
+
+    def __init__(self, model):
+        LLM.__init__(self, model)
+        from openai import OpenAI
+
+        self.client = OpenAI(api_key=getattr(get_settings(), self.key_field) or "missing", base_url=self.base_url)
+
+    def stream(self, system, user, max_tokens=1500):
+        resp = self.client.chat.completions.create(
+            model=self.model, stream=True, max_tokens=max(max_tokens, 2000), temperature=0.1,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        )
+        for ev in resp:
+            if ev.choices and ev.choices[0].delta.content:
+                yield ev.choices[0].delta.content
+
+
+class OpenRouterLLM(GroqLLM):
+    """OpenRouter: many models, some free (model ids ending in ':free'). Key: OPENROUTER_API_KEY."""
+    provider = "openrouter"
+    base_url = "https://openrouter.ai/api/v1"
+    key_field = "openrouter_api_key"
+
+
 class GeminiLLM(LLM):
     provider = "gemini"
 
@@ -114,7 +143,7 @@ class GeminiLLM(LLM):
                 yield ev.text
 
 
-PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GeminiLLM)}
+PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GroqLLM, OpenRouterLLM, GeminiLLM)}
 
 
 def get_llm(spec: str | None = None) -> LLM:

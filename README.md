@@ -17,13 +17,14 @@ question ──► parse filters ──► filtered dense + BM25 ──► RRF �
 | **Data** | `generate` creates a large synthetic hospital dataset (default 20k patients, about 100k studies). It includes demographics, chronic conditions, CT/MRI/X-ray/US/mammo/PET studies, AI predictions and structured reports with technique, comparison, findings, impression and recommendation. Follow-up scans refer back to earlier ones. Studies per patient follow a heavy-tailed distribution, so some patients have dozens. `import-legacy` loads the original `oads.*` tables instead. |
 | **Data check** | Runs 27 checks: duplicates, orphans, test records, non-standard codes, impossible dates, empty or HTML reports, and confidence values out of range. Writes `reports/quality_raw.md` / `quality_clean.md`. |
 | **Cleaning** | Each rule logs how many rows it changed (`reports/cleaning_log.md`). It merges duplicate registrations by MRN and re-points their studies, maps gender/modality/priority/status synonyms, strips HTML, removes test, orphan and future-dated rows, keeps the best report per study, and converts percent confidences to 0-1. |
-| **Ingestion & chunking** | Builds two document types. Each study report becomes one document. Each patient has a profile with conditions, counts and a timeline of recent impressions. Chunks split on section boundaries first, then on sentences. Every chunk starts with a contextual header (patient, MRN, age, study, date, priority, indication), so it still makes sense when retrieved on its own. |
+| **Outside documents** | `documents` loads real de-identified documents: 3,955 Open-i chest X-ray reports (NLM, with expert MeSH labels) and, if you add it, the Kaggle MTSamples set of about 5,000 transcriptions across 40 specialties. They are checked and cleaned: de-identification marks become `[redacted]`, headings are rebuilt in transcriptions, duplicates are merged and short or empty ones removed (`reports/quality_documents.md`). Each document is then attached to a synthetic patient of matching gender and age. The text is real; the patient link is synthetic. |
+| **Ingestion & chunking** | Builds three document types: study reports, patient profiles (conditions, counts, timeline, list of uploaded documents) and uploaded documents. Chunks split on section headings first (any upper-case heading such as `FINDINGS:` or `HISTORY OF PRESENT ILLNESS:`), then on sentences. Every chunk starts with a contextual header (patient, MRN, age, study, date, priority, indication), so it still makes sense when retrieved on its own. |
 | **Embeddings** | Pluggable: `sentence-transformers` (local, default `BAAI/bge-small-en-v1.5`), `ollama`, `openai` or `gemini`. Query/document instruction prefixes are applied per model. Each model gets its own index folder, so you can compare them. Rebuilds are incremental: only new or changed chunks are embedded. |
 | **Index** | Dense vectors use FAISS (exact search, switching to HNSW above 150k chunks). Sparse search uses BM25 via `bm25s`, with stemming and stopwords. Metadata is stored in parquet. |
-| **Retrieval** | The question is parsed into filters: patient (MRN, ID, accession, or fuzzy name match), modality, body part, priority, date range, "latest", "how many", "abnormal". Search runs only inside the matching records, so no other patient's chunks leak in. If nothing matches, filters are relaxed one at a time. Dense and BM25 results are fused with Reciprocal Rank Fusion, then reranked with a cross-encoder. The patient profile and latest studies are always included. |
+| **Retrieval** | The question is parsed into filters: patient (MRN, ID, accession, or fuzzy name match), modality, body part, priority, date range, "latest", "how many", "abnormal", a finding, documents and specialty. **Medical query expansion** maps lay terms to report wording ("slipped disc" → disc herniation / "disc extrusion", 32 findings, 104 synonyms) for BM25, embeddings, the reranker and the LLM. Search runs only inside the matching records, so no other patient's chunks leak in. If nothing matches, filters are relaxed one at a time. Dense and BM25 results are fused with Reciprocal Rank Fusion, then reranked with a medical cross-encoder (`ncbi/MedCPT-Cross-Encoder`). The reranker order is fused with the hybrid order (`RERANK_BLEND=fuse`) rather than replacing it, so a reranker cannot undo a good first-stage result. The patient profile and latest studies are always included. |
 | **Answering** | The LLM receives the sources plus **exact computed facts** (counts, breakdowns, the full timeline), so numbers never depend on which chunks happened to be retrieved. Answers cite `[S1]`... An unknown patient returns "not found" without calling the LLM. |
-| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`. Choose them in `.env` or per command as `provider:model`. |
-| **Evaluation** | Builds a test set from the data itself, so every question has a known answer: lookups by name or MRN, latest study, counts, semantic search, cohort counts and unknown patients. It scores retrieval (Hit@k, MRR, Recall@k, nDCG) for every index × mode, including "no filters" as a baseline. Answers are scored on fact recall, exact numbers, correct "not found" answers and citations. An optional judge model, separate from the answering model, scores correctness and faithfulness from 1 to 5. |
+| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`, `groq`, `openrouter`. Gemini, Groq and OpenRouter (`:free` models) have free API tiers, which are enough for evaluation and judging. Choose them in `.env` or per command as `provider:model`. |
+| **Evaluation** | Builds a test set from the data itself, so every question has a known answer: lookups by name or MRN, latest study, counts, semantic search, cohort counts and unknown patients. Three sets: **easy** (template lookups), **hard** (lay wording, some deliberately outside the expansion dictionary; questions without dates; follow-up trends; patients who never had the finding; misspelt names; cohort counts by finding) and **documents** (find an uploaded report by patient or by content alone). `golden_review.csv` holds a sample with the gold evidence for a person to check. It scores retrieval (Hit@k, MRR, Recall@k, nDCG) for every configuration, with ablations (no reranker, no expansion, no filters) and bootstrap 95% confidence intervals. Answers are scored on fact recall, exact numbers, correct "not found" answers and citations. Each answer also gets one pass/fail from whichever exact check fits the question. The LLM judge, a different model from the one answering, scores correctness, faithfulness, answer relevance and context relevance from 1 to 5. The report shows how often the judge agrees with the exact checks. |
 
 ## Setup
 
@@ -63,6 +64,7 @@ python -m medrag import-legacy                                 # or: use the ori
 python -m medrag check --stage raw
 python -m medrag clean
 python -m medrag index --embed-provider sentence-transformers --embed-model BAAI/bge-base-en-v1.5
+python -m medrag documents                                     # outside documents -> then run index again
 python -m medrag watch --interval 30                           # keep index in sync with the DB
 ```
 
@@ -88,25 +90,30 @@ Notes:
 
 ## Latest results (2026-10-27)
 
-20,000 patients, 89,868 studies, 108,934 chunks, `BAAI/bge-small-en-v1.5` + `ms-marco-MiniLM-L-6-v2` reranker, CPU only
-(index build: 2 h 50 min once; later rebuilds only embed changed chunks).
+20,000 patients, 89,868 studies, 3,878 Open-i reports, 112,817 chunks. `BAAI/bge-small-en-v1.5` embeddings, CPU only.
+The first index build took 2 h 50 min; adding the documents re-embedded only 7,428 chunks (12 min).
 
-| Retrieval mode | Hit@8 | MRR | Latency |
-|---|---:|---:|---:|
-| hybrid + rerank (with filters) | 1.000 | 0.997 | 0.5 s |
-| hybrid | 1.000 | 0.997 | 0.15 s |
-| dense only | 1.000 | 0.993 | 0.17 s |
-| hybrid + rerank, **no filters** (old approach) | 0.767 | 0.664 | 6.7 s |
+**Retrieval MRR@8** (180 questions with known gold documents; full table with 95% CIs in `reports/eval_20261027_2033/summary.md`):
 
-On semantic questions with no patient named, dense search alone scores MRR 0.85 and adding BM25 and the reranker raises it to 0.95.
+| Configuration | Easy | Hard | Documents | Latency |
+|---|---:|---:|---:|---:|
+| **hybrid + MedCPT reranker (fuse) - default** | 1.000 | 0.905 | 0.808 | 2.8 s |
+| hybrid + MedCPT reranker (replace) | 1.000 | 0.915 | 0.793 | 2.8 s |
+| hybrid + MiniLM reranker (fuse) | 1.000 | 0.885 | 0.797 | 0.7 s |
+| hybrid, no reranker | 1.000 | 0.875 | 0.762 | 0.1 s |
+| dense only | 0.995 | 0.913 | 0.621 | 0.1 s |
+| BM25 only | 1.000 | 0.865 | 0.837 | 0.05 s |
+| hybrid + rerank, **no query expansion** | 0.995 | 0.793 | 0.797 | 0.6 s |
+| hybrid + rerank, **no filters** | 0.495 | 0.509 | 0.507 | 4.1 s |
 
-Answers from local `qwen2.5:3b` (24 questions): every count exact (100%), correct "not found" on all unknown-patient questions (100%), 79% of key report facts present,
-about 52 s per answer on CPU. Its weak spot is wording mismatches (question says "disc herniation", report says "disc extrusion"):
-retrieval finds the right report, but the 3B model then answers "no patient". A stronger model (`anthropic:claude-opus-5-5`, OpenAI, Gemini,
-or a larger local model) is recommended for production; compare with `eval --llms ... --judge`. `qwen3:4b` answered correctly but
-always prints its reasoning and takes 3-6 min per answer on this CPU.
+What this shows:
+- Metadata filtering is the biggest win: it doubles MRR.
+- Medical query expansion adds about 0.09 MRR on hard questions. On wording that is *not* in the dictionary, hybrid search still recovers 98% of gold documents.
+- A general web-trained reranker (`bge-reranker-base`, tested earlier) made results *worse* than no reranker, and was slower. The medical MedCPT reranker helps. Fusing its order with the hybrid order is the safest choice overall.
+- Dense search alone is weak on keyword-style document questions (0.27 on `doc_semantic`). BM25 is weak on paraphrases. Hybrid covers both.
+- Differences of a few hundredths are inside the confidence intervals. Treat the top three rerank configurations as equivalent.
 
-Full reports: `reports/eval_*/summary.md` (also in the app's Evaluation tab).
+**Answers** from local `qwen2.5:3b` (earlier run, 24 questions): every count exact, every unknown patient correctly answered "not found", 79% of key report facts present, about 52 s per answer on CPU. It misses some reworded findings that a stronger model handles; compare with `eval --llms ... --judge` using a free Gemini or Groq key.
 
 ## Layout
 
@@ -114,10 +121,11 @@ Full reports: `reports/eval_*/summary.md` (also in the app's Evaluation tab).
 medrag/
   config.py               settings from .env
   data/      generate.py  catalog.py  store.py  quality.py  clean.py
+  documents/ loaders.py   prepare.py   (Open-i, MTSamples: load, check, clean, link)
   ingest/    documents.py chunking.py
   providers/ embeddings.py llms.py
   index/     store.py     (FAISS + BM25 + metadata, incremental)
-  retrieval/ query_parser.py retriever.py
+  retrieval/ query_parser.py retriever.py expansion.py
   rag/       answer.py
   eval/      testset.py   run.py
   __main__.py             CLI

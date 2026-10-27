@@ -35,13 +35,15 @@ class Answer:
     generation_s: float
 
 
-def computed_facts(r: Result, meta: pd.DataFrame) -> str:
+def computed_facts(r: Result, retriever: Retriever) -> str:
     """Exact statistics for the filtered records, so counts never depend on what retrieval happened to return."""
-    f = r.filters
+    f, meta = r.filters, retriever.meta
     if not (f.aggregate or f.patient_ids or f.latest):
         return ""
     scope = meta if r.subset is None else meta.iloc[r.subset]
     st = scope[(scope["doc_type"] == "study") & (scope["part"] == 0)]
+    if f.findings:  # count by what the radiologist reported, not by the (sometimes wrong) AI label
+        st = st[retriever.finding_mask(f.findings).loc[st.index]]
     lines = [f"Filters applied: {f.describe()}",
              f"Matching studies: {len(st):,} across {st['patient_id'].nunique():,} patients "
              f"(this is the exact number of studies that match the question)"]
@@ -66,6 +68,12 @@ def computed_facts(r: Result, meta: pd.DataFrame) -> str:
         last = st.sort_values("study_date").iloc[-1]
         lines.append(f"Most recent study: {last.study_date:%Y-%m-%d} {C.MODALITY_NAMES.get(last.modality, last.modality)} "
                      f"{last.body_part} ({last.priority}, study {last.study_id}): {last.impression}")
+    if f.patient_ids:
+        docs = meta[(meta["doc_type"] == "document") & (meta["part"] == 0) & meta["patient_id"].isin(f.patient_ids)]
+        if len(docs):
+            lines.append(f"Uploaded documents ({len(docs)}), most recent first:")
+            for x in docs.sort_values("study_date", ascending=False).head(20).itertuples():
+                lines.append(f"- {x.study_date:%Y-%m-%d} {x.title} ({x.specialty}, {x.doc_id}): {x.impression or 'see document'}")
     if f.patient_ids and len(st):
         lines.append(f"Study timeline (most recent first, up to {MAX_TIMELINE}):")
         for x in st.sort_values("study_date", ascending=False).head(MAX_TIMELINE).itertuples():
@@ -94,7 +102,7 @@ class RAG:
     def prepare(self, question: str, mode: str = "hybrid+rerank", k: int | None = None) -> tuple[Result, str, str, float]:
         t0 = time.time()
         r = self.retriever.search(question, k=k, mode=mode)
-        facts = computed_facts(r, self.retriever.meta)
+        facts = computed_facts(r, self.retriever)
         return r, facts, build_prompt(question, r, facts), time.time() - t0
 
     def stream(self, question: str, mode: str = "hybrid+rerank") -> tuple[Result, str, Iterator[str]]:

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     embed_provider: str = "sentence-transformers"
     embed_model: str = "BAAI/bge-small-en-v1.5"
     embed_batch_size: int = 64
-    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_model: str = "ncbi/MedCPT-Cross-Encoder"
 
     llm_provider: str = "ollama"
     llm_model: str = "qwen2.5:3b"
@@ -31,9 +31,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    groq_api_key: str = ""
+    openrouter_api_key: str = ""
 
     top_k: int = 8
     candidates: int = 60
+    rerank_pool: int = 30  # fused candidates re-scored by the cross-encoder
+    rerank_blend: str = "fuse"  # fuse = RRF of hybrid and reranker order; replace = reranker order only
 
     data_dir: Path = ROOT / "data"
     index_dir: Path = ROOT / "indexes"

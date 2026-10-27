@@ -6,7 +6,8 @@ then on sentences, and packed up to `max_words` with a small sentence overlap.
 """
 import re
 
-SECTION_RE = re.compile(r"^(TECHNIQUE|COMPARISON|FINDINGS|IMPRESSION|RECOMMENDATION|HISTORY|INDICATION):", re.M)
+# Any upper-case heading at the start of a line ("FINDINGS:", "HISTORY OF PRESENT ILLNESS:", "PLAN:").
+SECTION_RE = re.compile(r"^([A-Z][A-Z0-9 /&(),'-]{2,60}):", re.M)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 
 

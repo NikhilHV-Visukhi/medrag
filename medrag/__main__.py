@@ -52,6 +52,31 @@ def cmd_clean(a):
     print(f"post-clean check: {len(failing)} error checks failing (reports/quality_clean.md)")
 
 
+def cmd_documents(a):
+    """Load outside documents -> check -> clean -> link to patients -> check again. Then run `index`."""
+    from medrag.data import quality, store
+    from medrag.documents import loaders, prepare
+
+    s = get_settings()
+    raw = loaders.load_all(s.data_dir / "documents")
+    print("loaded:", raw["source"].value_counts().to_dict())
+    store.write_table("raw", "documents", raw.assign(document_id=range(1, len(raw) + 1), patient_id=None, doc_date=None))
+    before = prepare.check(raw)
+    docs, log = prepare.clean(raw)
+    docs, link_log = prepare.link_to_patients(docs, store.read_table("clean", "patients"))
+    log += link_log
+    store.write_table("clean", "documents", docs)
+    after = prepare.check(docs)
+    lines = ["# Document quality report", "", "| Check | Before | After |", "|---|---:|---:|"]
+    lines += [f"| {b['check']} | {b['count']:,} | {c['count']:,} |" for b, c in zip(before, after)]
+    lines += ["", "## Cleaning log", ""] + [f"- {x}" for x in log]
+    lines += ["", "## Documents by source / specialty", "", docs.groupby("source")["specialty"].agg(lambda x: x.str.split(";").str[0].value_counts().head(12).to_dict()).to_string()]
+    s.reports_dir.mkdir(parents=True, exist_ok=True)
+    (s.reports_dir / "quality_documents.md").write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines[:len(before) + 4] + [""] + log))
+    print(f"\n{len(docs):,} clean documents written. Next: python -m medrag index")
+
+
 def cmd_index(a):
     from medrag.data import store
     from medrag.index.store import build
@@ -116,20 +141,44 @@ def cmd_eval(a):
 
     s = get_settings()
     specs = [x.split(":", 1) for x in a.indexes.split(",")] if a.indexes else [(s.embed_provider, s.embed_model)]
-    retrievers = {f"{p}:{m}": Retriever(Index(s.index_path(p, m))) for p, m in specs}
-    first = next(iter(retrievers.values()))
+    rerankers = a.rerankers.split(",") if a.rerankers else [s.rerank_model]
+    indexes = {f"{p}:{m}": Index(s.index_path(p, m)) for p, m in specs}
+    main_name, main_index = next(iter(indexes.items()))
+
+    configs = []
+    for name, idx in indexes.items():  # every index with the first reranker
+        configs.append(run.Config(f"{name} | hybrid+rerank ({rerankers[0].split('/')[-1]})", Retriever(idx, rerank_model=rerankers[0])))
+    for rr in rerankers[1:]:  # every other reranker on the main index
+        configs.append(run.Config(f"{main_name} | hybrid+rerank ({rr.split('/')[-1]})", Retriever(main_index, rerank_model=rr)))
+    if a.blends:  # also each reranker with its order replacing (not fused with) the hybrid order
+        for rr in rerankers:
+            configs.append(run.Config(f"{main_name} | hybrid+rerank ({rr.split('/')[-1]}, replace)",
+                                      Retriever(main_index, rerank_model=rr, rerank_blend="replace")))
+    main = configs[0].retriever
+    if a.baselines:  # ablations on the main configuration
+        configs += [run.Config(f"{main_name} | {m}", main, mode=m) for m in ("hybrid", "dense", "bm25")]
+        configs += [run.Config(f"{main_name} | hybrid+rerank, no query expansion", main, expand=False),
+                    run.Config(f"{main_name} | hybrid+rerank, no filters", main, use_filters=False)]
+
     out = s.reports_dir / f"eval_{datetime.now():%Y%m%d_%H%M}"
     out.mkdir(parents=True, exist_ok=True)
-    items = testset.build(first.meta, a.per_type)
+    items = testset.build(main.meta, a.per_type)
+    if a.difficulty != "all":
+        items = [i for i in items if i["difficulty"] == a.difficulty]
     testset.save(items, out / "testset.json")
-    print(f"{len(items)} test questions -> {out / 'testset.json'}")
+    testset.review_sheet(items, main.meta, out / "golden_review.csv")
+    print(f"{len(items)} test questions -> {out / 'testset.json'} (hand-check sample: golden_review.csv)")
 
-    ret_df = run.eval_retrieval(items, retrievers, a.k)
+    ret_df = run.eval_retrieval(items, configs, a.k)
     gen_df = None
     if not a.skip_generation:
         llms = a.llms.split(",") if a.llms else [f"{s.llm_provider}:{s.llm_model}"]
-        gen_items = items if a.max_answers is None else items[:: max(1, len(items) // a.max_answers)][: a.max_answers]
-        gen_df = run.eval_generation(gen_items, first, llms, a.judge)
+        by_type: dict[str, list] = {}
+        for it in items:
+            by_type.setdefault(it["type"], []).append(it)
+        per = max(1, a.max_answers // len(by_type))  # stratified: the same number of answers from every question type
+        gen_items = [it for group in by_type.values() for it in group[:per]]
+        gen_df = run.eval_generation(gen_items, main, llms, a.judge)
     print(run.report(ret_df, gen_df, out, a.k))
     print(f"\nSaved {out}")
 
@@ -166,6 +215,7 @@ def main():
     p.add_argument("--strict", action="store_true", help="exit 1 if any error-level check fails")
     p.set_defaults(fn=cmd_check)
     sub.add_parser("clean", help="clean raw -> clean stage").set_defaults(fn=cmd_clean)
+    sub.add_parser("documents", help="ingest outside documents (Open-i, MTSamples): check, clean, link to patients").set_defaults(fn=cmd_documents)
     p = sub.add_parser("index", help="chunk + embed + build hybrid index from clean data")
     index_args(p)
     p.set_defaults(fn=cmd_index)
@@ -186,6 +236,10 @@ def main():
     p.add_argument("--per-type", type=int, default=20)
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--max-answers", type=int, default=40, help="questions used for the (slower) answer evaluation")
+    p.add_argument("--rerankers", help="comma list of cross-encoder models to compare (first one is the main)")
+    p.add_argument("--baselines", action="store_true", help="also run ablations: hybrid, dense, bm25, no expansion, no filters")
+    p.add_argument("--blends", action="store_true", help="also run every reranker in 'replace' mode (default is 'fuse')")
+    p.add_argument("--difficulty", choices=["all", "easy", "hard", "documents"], default="all")
     p.add_argument("--judge", action="store_true", help="also score answers with the judge LLM from .env")
     p.add_argument("--skip-generation", action="store_true")
     p.set_defaults(fn=cmd_eval)

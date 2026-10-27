@@ -70,7 +70,7 @@ with chat_tab:
                 with st.expander(f"Sources ({len(r.hits)})"):
                     show = r.hits[["doc_id", "via", "score", "patient_name", "mrn", "study_date", "modality", "body_part", "priority"]].copy()
                     show.insert(0, "src", [f"S{i}" for i in range(1, len(show) + 1)])
-                    st.dataframe(show, hide_index=True, use_container_width=True)
+                    st.dataframe(show, hide_index=True, width="stretch")
                     for i, row in enumerate(r.hits.itertuples(), 1):
                         st.text(f"[S{i}] {row.doc_id}\n{row.text}")
                 if facts:
@@ -94,7 +94,14 @@ with patient_tab:
                 studies = studies.sort_values("study_date", ascending=False)
                 studies = studies.assign(modality=studies["modality"].map(C.MODALITY_NAMES))
                 st.dataframe(studies[["study_id", "study_date", "modality", "body_part", "priority", "impression", "ai_label", "ai_confidence"]],
-                             hide_index=True, use_container_width=True)
+                             hide_index=True, width="stretch")
+                docs = meta[(meta["patient_id"] == pt.patient_id) & (meta["doc_type"] == "document")].sort_values(["study_date", "part"])
+                if len(docs):
+                    st.markdown(f"**Uploaded documents ({docs['doc_id'].nunique()})**")
+                    for doc_id, g in docs.groupby("doc_id", sort=False):
+                        first = g.iloc[0]
+                        st.caption(f"{first.study_date:%Y-%m-%d} · {first.title} · {first.specialty} · source: {first.source}")
+                        st.text("\n\n".join(g["text"]))  # expanders cannot be nested inside the patient expander
 
 # ---------------- data quality ----------------
 with quality_tab:
@@ -117,4 +124,4 @@ with eval_tab:
         gen = pick.parent / "generation.csv"
         if gen.exists():
             st.subheader("Answers")
-            st.dataframe(pd.read_csv(gen), use_container_width=True)
+            st.dataframe(pd.read_csv(gen), width="stretch")

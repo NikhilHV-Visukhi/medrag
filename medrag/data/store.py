@@ -33,8 +33,13 @@ COLUMNS = {
         "report_id": "bigint", "study_id": "bigint", "radiologist": "text",
         "report_text": "text", "status": "text", "signed_at": "timestamp",
     },
+    "documents": {
+        "document_id": "bigint", "patient_id": "bigint", "source": "text", "source_id": "text", "title": "text",
+        "specialty": "text", "doc_date": "timestamp", "text": "text", "labels": "text", "description": "text",
+    },
 }
-DATE_COLS = {"date_of_birth", "diagnosed_on", "study_date", "signed_at"}
+CORE_TABLES = ["patients", "conditions", "studies", "ai_analysis", "reports"]  # documents are optional
+DATE_COLS = {"date_of_birth", "diagnosed_on", "study_date", "signed_at", "doc_date"}
 
 
 @contextmanager
@@ -107,7 +112,13 @@ def read_table(stage: str, name: str) -> pd.DataFrame:
 
 
 def read_all(stage: str) -> dict[str, pd.DataFrame]:
-    return {name: read_table(stage, name) for name in COLUMNS}
+    """Core tables, plus 'documents' when that stage has them."""
+    t = {name: read_table(stage, name) for name in CORE_TABLES}
+    try:
+        t["documents"] = read_table(stage, "documents")
+    except Exception:  # no documents ingested yet (missing file or table)
+        pass
+    return t
 
 
 def write_all(stage: str, tables: dict[str, pd.DataFrame]) -> None:

@@ -89,7 +89,7 @@ def test_computed_facts_count_exactly(env, built):
     pid = ret.meta["patient_id"].value_counts().index[0]
     name = ret.meta.loc[ret.meta["patient_id"] == pid, "patient_name"].iloc[0]
     r = ret.search(f"How many studies does {name} have?")
-    facts = computed_facts(r, ret.meta)
+    facts = computed_facts(r, ret)
     n = ret.meta[(ret.meta["patient_id"] == pid) & (ret.meta["doc_type"] == "study") & (ret.meta["part"] == 0)].shape[0]
     assert f"Matching studies: {n:,}" in facts
 
@@ -100,6 +100,55 @@ def test_eval_metrics():
     m = retrieval_metrics(["a", "b", "c"], ["b"], 3)
     assert m["hit"] == 1 and m["mrr"] == 0.5 and m["recall"] == 1
     assert retrieval_metrics(["a"], ["z"], 3)["hit"] == 0
+
+
+def test_query_expansion_maps_lay_terms():
+    from medrag.retrieval.expansion import detect_findings, expand
+
+    q, notes = expand("Has she ever had a slipped disc or fatty liver?")
+    assert "disc extrusion" in q and "hepatic steatosis" in q and len(notes) == 2
+    assert [lbl for _, lbl in detect_findings("brain bleed")] == ["intracranial haemorrhage"]
+    assert expand("CT chest on 2024-01-01")[1] == []
+
+
+def test_answer_scoring():
+    from medrag.eval.run import ci, score_answer
+
+    assert score_answer({"number": 1234}, "There were 1,234 studies.")["auto_correct"] == 1
+    assert score_answer({"expect_no": True}, "No, she has never had one.")["auto_correct"] == 1
+    assert score_answer({"facts": ["improv|better"]}, "It has improved.")["auto_correct"] == 1
+    assert score_answer({"facts": ["2024-01-01", "ct|x"]}, "On 2024-01-01 an MRI")["fact_recall"] == 0.5
+    assert ci([1, 0, 1, 1]).startswith("0.750 [")
+
+
+def test_hard_testset(env, built):
+    from medrag.eval import testset
+    from medrag.retrieval.retriever import Retriever
+
+    items = testset.build(Retriever().meta, per_type=5)
+    kinds = {i["type"] for i in items if i["difficulty"] == "hard"}
+    assert {"hard_paraphrase_patient", "hard_negative", "hard_typo_name", "hard_count_finding"} <= kinds
+
+
+def test_document_cleaning_and_linking(built):
+    from medrag.documents.prepare import clean, link_to_patients
+
+    raw = pd.DataFrame({
+        "source": ["mtsamples", "mtsamples", "openi", "openi", "openi"],
+        "source_id": ["a", "b", "c", "d", "e"], "title": ["Consult"] * 2 + ["CXR"] * 3,
+        "specialty": ["Cardiology", "Surgery", "Radiology", "Radiology", "Radiology"],
+        "text": ["HISTORY OF PRESENT ILLNESS:,  This 45-year-old female presents with chest pain over two days and mild dyspnea on exertion today.,"] * 2
+                + ["FINDINGS: Normal heart size. Lungs are clear. No effusion. IMPRESSION: No acute disease XXXX seen today at all."] * 2 + ["short"],
+        "labels": None, "description": "x",
+    })
+    docs, log = clean(raw)
+    assert len(docs) == 3  # mtsamples duplicate merged, identical Open-i reports kept, short one dropped
+    assert docs.iloc[0]["text"].startswith("HISTORY OF PRESENT ILLNESS: This") and "Surgery" in docs.iloc[0]["specialty"]
+    assert "[redacted]" in docs.iloc[1]["text"]
+    linked, _ = link_to_patients(docs, built[1]["patients"])
+    assert linked["patient_id"].notna().all()
+    pt = built[1]["patients"].set_index("patient_id").loc[linked.iloc[0]["patient_id"]]
+    assert pt["gender"] == "female"
 
 
 def test_chunking_splits_long_text():

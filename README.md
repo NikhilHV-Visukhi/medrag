@@ -165,7 +165,7 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 - **Gemini 3 Flash is the best all-rounder:** top accuracy, careful about "not found", cites its sources, and answers in about 3 s. qwen3:4b is as careful but takes 7-8 minutes on CPU.
 - **Two questions fail for every model, so they are pipeline issues:**
   - a finding count whose wording ("stones in the gallbladder") is not in the expansion dictionary;
-  - a document question where "back" set a spine filter, which pushed out the documents filter.
+  - a document question where "back" set a spine filter, which pushed out the documents filter. Now fixed: body part is relaxed before the documents filter, so the right patient is found (documents Hit@8 0.875 → 0.925).
 - **Privacy:** Gemini sees the question and the retrieved records. That is fine for synthetic and public data, not for real patient data without an agreement.
 
 ## Layout

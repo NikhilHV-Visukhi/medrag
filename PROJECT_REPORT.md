@@ -22,7 +22,7 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
 - **Cost:** everything used is free and open source, and no paid service was needed.
 
 **Status.**
-- **Ready:** the pipeline works end to end, with 16 tests, a 313-question evaluation and a web app.
+- **Ready:** the pipeline works end to end, with 17 tests, a 313-question evaluation and a web app.
 - **Not ready:** it is not yet ready for real patient data. That needs compliance work, a login and validation on real reports (section 69).
 
 **How the report is organised.**
@@ -818,7 +818,7 @@ Errors (for example the database briefly down) are printed and the watcher keeps
 `medrag/retrieval/retriever.py`, mode `hybrid+rerank` by default (also `hybrid`, `dense`, `bm25`).
 
 1. **Parse** the question into filters.
-2. **Filter**: restrict the search to rows matching all filters. If nothing matches, drop the least important filter and try again, in this order: abnormal, documents, priority, dates, body part, modality, patient. Each relaxation is noted ("No records match every filter; relaxed the 'modality' filter.").
+2. **Filter**: restrict the search to rows matching all filters. If nothing matches, drop the least important filter and try again, in this order: abnormal, body part, documents, priority, dates, modality, patient. Only filters the question actually set are reported. Each relaxation is noted ("No records match every filter; relaxed the 'modality' filter.").
 3. **Expand** the query (section 13).
 4. **Dense search**: top 60 by cosine similarity. Inside a filter this is an exact search over the subset's vectors.
 5. **BM25 search**: top 60 over the same subset.
@@ -1296,8 +1296,8 @@ Conclusions:
     - Possible fixes: a fallback that recognises findings by meaning, or a larger dictionary.
   - **`doc_transcription_semantic`** ("Which patient had a orthopedic document about: Patient with *back* and hip pain?"):
     - The word "back" sets a spine body-part filter.
-    - Documents have no body part, so nothing matches. The relaxation order then drops the *documents* filter first, and the search runs over spine X-rays.
-    - Fix: relax body part and modality before the documents filter.
+    - Documents have no body part, so nothing matches. The relaxation order then dropped the *documents* filter first, and the search ran over spine X-rays.
+    - **Fixed:** body part is now relaxed before the documents filter (section 44). Documents Hit@8 rises from 0.875 to 0.925; other groups are unchanged. Sara Dey's orthopedic consult is now the top hit, and Gemini 3 Flash answers "Sara Dey" correctly. The table above shows the scores from before the fix.
 - **Privacy trade-off:** Gemini receives the question and the retrieved record text. That is fine for this synthetic and public data, but not for real patient data without a data-processing agreement (section 69). The local models keep everything on the machine.
 - **Small sample:** 18 questions per model, so one answer moves a total by about 6 points.
 
@@ -1323,7 +1323,7 @@ A whole-repository audit was run. Findings 1-6 were fixed with tests (finding 7)
 | 12 | (open) duplicated not-found message; unused `clean_dir` property | |
 | 13 | Found later: the cohort-count test answer excluded patients with shared names (expected 99, truth 101) | Fixed in `testset.build`; regression test; 126 answers re-scored (section 20.7) |
 | 14 | Found later: Gemini 503 "high demand" errors were not retried | 503 / UNAVAILABLE added to the retried errors |
-| 15 | (open) a body-part word in a document question drops the documents filter | Relax body part and modality before documents |
+| 15 | A body-part word in a document question dropped the documents filter, so the search ran over spine studies | Relax body part before documents (dates and modality stay after, or MRN X-ray report lookups break); regression test `test_documents_filter_outlasts_study_filters` (fixed) |
 | 16 | (open) finding counts ignore the finding when its wording is not in the dictionary | Fallback finding detection by meaning, or a larger dictionary |
 
 The new tests were confirmed to fail on the old code (via `git stash`) and pass on the new.
@@ -1332,7 +1332,7 @@ The new tests were confirmed to fail on the old code (via `git stash`) and pass 
 
 ## 22. Tests
 
-`pytest` — 16 tests, all passing. They build a small dataset with the hash embedder (no downloads) and run the real pipeline.
+`pytest` — 17 tests, all passing. They build a small dataset with the hash embedder (no downloads) and run the real pipeline.
 
 | Test | Checks |
 |---|---|
@@ -2223,7 +2223,8 @@ Example: `"Has X ever had a slipped disc?"` → `"Has X ever had a slipped disc?
 **Where:** `medrag/retrieval/retriever.py` → `FILTER_ORDER`, `Retriever._mask()`, `Retriever.filter_rows()`.
 
 ```python
-FILTER_ORDER = ["abnormal", "documents", "priority", "dates", "body_part", "modality", "patient"]   # first relaxed first
+# Documents have no body part and a lay word often sets one ("back" -> spine), so body_part goes before "documents".
+FILTER_ORDER = ["abnormal", "body_part", "documents", "priority", "dates", "modality", "patient"]   # first relaxed first
 
 def _mask(self, f, use):
     m = pd.Series(True, index=self.meta.index)
@@ -2246,13 +2247,14 @@ def filter_rows(self, f, notes):
             return None if m.all() else np.flatnonzero(m.to_numpy())
         dropped = FILTER_ORDER[len(FILTER_ORDER) - len(use)]
         use.discard(dropped)
-        notes.append(f"No records match every filter; relaxed the '{dropped}' filter.")
+        if not self._mask(f, {dropped}).all():        # only report filters the question set
+            notes.append(f"No records match every filter; relaxed the '{dropped}' filter.")
 ```
 
 **Why:**
 - **Pre-filtering:** filtering *before* search is the single largest gain measured. MRR is about 0.5 without filters and 0.9–1.0 with them, because a patient question searches that patient's 5–50 chunks instead of 121,335.
 - **Relaxation instead of returning nothing:** "Asha Rao's MRI" when she has no MRI still shows her other studies, with a note saying so.
-- **The order** keeps the most important constraint, the patient, until last.
+- **The order** keeps the most important constraint, the patient, until last. Body part is dropped before the documents filter: "orthopedic document about back and hip pain" sets `body_part=spine` from "back", no document has a body part, and the older order dropped *documents* first and searched spine X-rays instead (audit row 15, fixed). Dates and modality stay after documents: dropping them first was tried and broke "Summarise the X-ray report for patient MRN… dated …" (the phrase "X-ray report" sets the documents filter), cutting `lookup_by_mrn` Hit@8 from 1.00 to 0.55. With the final order, documents questions rise from Hit@8 0.875 / MRR 0.809 to 0.925 / 0.859, and easy and hard questions are unchanged (run eval_20261028_2246).
 - **Counts never relax:** they always use every filter (section 48).
 - **Fast:** a vectorised mask over 121k rows takes milliseconds.
 
@@ -2670,7 +2672,7 @@ text = st.write_stream(stream)                                   # token-by-toke
 ## 57. Tests
 
 **Method:** pytest with a session fixture that builds a small dataset and index using the hash embedder.
-**Where:** `tests/conftest.py`, `tests/test_pipeline.py` (16 tests).
+**Where:** `tests/conftest.py`, `tests/test_pipeline.py` (17 tests).
 
 ```python
 def test_count_is_zero_when_patient_lacks_the_modality(env, built):

@@ -85,6 +85,22 @@ def test_parser_and_retrieval(env, built):
     assert r.filters.unresolved_patient == "Zebulon Quixote"
 
 
+def test_documents_filter_outlasts_study_filters(env, built):
+    from medrag.retrieval.query_parser import Filters
+    from medrag.retrieval.retriever import Retriever
+
+    ret = Retriever()
+    notes = []
+    rows = ret.filter_rows(Filters(documents=True, body_part="spine"), notes)  # "document about back pain"
+    assert rows is not None and set(ret.meta["doc_type"].iloc[rows]) <= {"document", "patient"}
+    assert any("'body_part'" in n for n in notes)
+
+    st = ret.meta[ret.meta["doc_type"] == "study"].iloc[0]  # "X-ray report for MRN... dated ..." means the study
+    f = Filters(documents=True, modality=st.modality, patient_ids=[st.patient_id], date_from=st.study_date, date_to=st.study_date)
+    rows = ret.filter_rows(f, [])
+    assert rows is not None and st.doc_id in set(ret.meta["doc_id"].iloc[rows])
+
+
 def test_computed_facts_count_exactly(env, built):
     from medrag.rag.answer import computed_facts
     from medrag.retrieval.retriever import Retriever

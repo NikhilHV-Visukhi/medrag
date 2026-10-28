@@ -19,7 +19,10 @@ from medrag.retrieval.expansion import expand as expand_query, impression_patter
 from medrag.retrieval.query_parser import Filters, QueryParser
 
 MODES = ("bm25", "dense", "hybrid", "hybrid+rerank")
-FILTER_ORDER = ["abnormal", "documents", "priority", "dates", "body_part", "modality", "patient"]  # first is relaxed first
+# First is relaxed first. Documents have no body part and a lay word often sets one ("back" -> spine), so
+# body_part goes before "documents": "orthopedic document about back pain" must not fall back to spine studies.
+# Dates and modality stay after it: "X-ray report for MRN... dated ..." means the study, not a document.
+FILTER_ORDER = ["abnormal", "body_part", "documents", "priority", "dates", "modality", "patient"]
 
 
 @dataclass
@@ -117,7 +120,8 @@ class Retriever:
                 return np.flatnonzero(m.to_numpy())
             dropped = order[len(order) - len(use)]
             use.discard(dropped)
-            notes.append(f"No records match every filter; relaxed the '{dropped}' filter.")
+            if not self._mask(f, {dropped}).all():  # only report filters the question actually set
+                notes.append(f"No records match every filter; relaxed the '{dropped}' filter.")
         return None
 
     # ---------------- search ----------------

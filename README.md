@@ -23,7 +23,7 @@ question ──► parse filters ──► filtered dense + BM25 ──► RRF �
 | **Index** | Dense vectors use FAISS (exact search, switching to HNSW above 150k chunks). Sparse search uses BM25 via `bm25s`, with stemming and stopwords. Metadata is stored in parquet. |
 | **Retrieval** | The question is parsed into filters: patient (MRN, ID, accession, or fuzzy name match), modality, body part, priority, date range, "latest", "how many", "abnormal", a finding, documents and specialty. **Medical query expansion** maps lay terms to report wording ("slipped disc" → disc herniation / "disc extrusion", 32 findings, 104 synonyms) for BM25, embeddings, the reranker and the LLM. Search runs only inside the matching records, so no other patient's chunks leak in. If nothing matches, filters are relaxed one at a time. Dense and BM25 results are fused with Reciprocal Rank Fusion, then reranked with a medical cross-encoder (`ncbi/MedCPT-Cross-Encoder`). The reranker order is fused with the hybrid order (`RERANK_BLEND=fuse`) rather than replacing it, so a reranker cannot undo a good first-stage result. The patient profile and latest studies are always included. |
 | **Answering** | The LLM receives the sources plus **exact computed facts** (counts, breakdowns, the full timeline), so numbers never depend on which chunks happened to be retrieved. Answers cite `[S1]`... An unknown patient returns "not found" without calling the LLM. |
-| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`, `groq`, `openrouter`. Gemini, Groq and OpenRouter (`:free` models) have free API tiers, which are enough for evaluation and judging. Choose them in `.env` or per command as `provider:model`. |
+| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`, `groq`, `openrouter`, `bedrock` (AWS: any Bedrock model through the Converse API). Gemini, Groq and OpenRouter (`:free` models) have free API tiers, which are enough for evaluation and judging. Choose them in `.env` or per command as `provider:model`. |
 | **Evaluation** | Builds a test set from the data itself, so every question has a known answer: lookups by name or MRN, latest study, counts, semantic search, cohort counts and unknown patients. Three sets: **easy** (template lookups), **hard** (lay wording, some deliberately outside the expansion dictionary; questions without dates; follow-up trends; patients who never had the finding; misspelt names; cohort counts by finding) and **documents** (find an uploaded report by patient or by content alone). `golden_review.csv` holds a sample with the gold evidence for a person to check. It scores retrieval (Hit@k, MRR, Recall@k, nDCG) for every configuration, with ablations (no reranker, no expansion, no filters) and bootstrap 95% confidence intervals. Answers are scored on fact recall, exact numbers, correct "not found" answers and citations. Each answer also gets one pass/fail from whichever exact check fits the question. The LLM judge, a different model from the one answering, scores correctness, faithfulness, answer relevance and context relevance from 1 to 5. The report shows how often the judge agrees with the exact checks. |
 
 ## Setup
@@ -83,6 +83,24 @@ python -m medrag eval ^
 ```
 
 Results are written to `reports/eval_<timestamp>/` (`summary.md`, `retrieval.csv`, `generation.csv`, `testset.json`) and appear in the app's Evaluation tab.
+
+## Real-time answers with AWS Bedrock
+
+On CPU an answer takes about a minute, almost all of it the LLM. Bedrock runs the LLM as a managed service:
+answers in a few seconds, many users at once, no servers or GPUs to manage, pay per request.
+
+1. In the AWS console, open Bedrock > Model access and enable a model (e.g. Amazon Nova Lite, Llama, Claude).
+2. Give this machine credentials: `aws configure` (or an IAM role when running on AWS). Keys never go in `.env`.
+3. In `.env`: `LLM_PROVIDER=bedrock`, `LLM_MODEL=<model id from the console>`, `AWS_REGION=<region>`.
+
+```bash
+python -m medrag ask "Latest scan for MRN0000042?" --llm bedrock:us.amazon.nova-lite-v1:0
+python -m medrag eval --llms bedrock:us.amazon.nova-lite-v1:0,ollama:qwen2.5:3b --max-answers 16
+```
+
+For real patient data, sign the AWS Business Associate Agreement (HIPAA) and use HIPAA-eligible services only.
+The search index and MedCPT reranker still run on the app's CPU (about 3 s); set
+`RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2` to cut that to under a second.
 
 Notes:
 - API providers read their keys from `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`). Claude requests enable server-side refusal fallback.

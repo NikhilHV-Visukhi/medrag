@@ -28,7 +28,7 @@ class LLM:
                 return "".join(self.stream(system, user, max_tokens))
             except Exception as e:  # free tiers rate-limit often: wait and retry on 429 / quota errors only
                 msg = str(e)
-                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit")):
+                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException")):
                     raise
                 time.sleep(15 * (attempt + 1))
 
@@ -151,7 +151,31 @@ class GeminiLLM(LLM):
                 yield ev.text
 
 
-PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GroqLLM, OpenRouterLLM, GeminiLLM)}
+class BedrockLLM(LLM):
+    """AWS Bedrock via the Converse API: one interface for every Bedrock model (Claude, Llama, Nova, Mistral).
+    Model ids come from the Bedrock console, e.g. 'us.amazon.nova-lite-v1:0'. Credentials use the standard
+    AWS chain (aws configure / AWS_PROFILE / instance role), never .env."""
+    provider = "bedrock"
+
+    def __init__(self, model):
+        super().__init__(model)
+        import boto3
+
+        s = get_settings()
+        self.client = boto3.Session(profile_name=s.aws_profile or None, region_name=s.aws_region).client("bedrock-runtime")
+
+    def stream(self, system, user, max_tokens=1500):
+        resp = self.client.converse_stream(
+            modelId=self.model, system=[{"text": system}],
+            messages=[{"role": "user", "content": [{"text": user}]}],
+            inferenceConfig={"maxTokens": max_tokens, "temperature": 0.1},
+        )
+        for ev in resp["stream"]:
+            if text := ev.get("contentBlockDelta", {}).get("delta", {}).get("text"):
+                yield text
+
+
+PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GroqLLM, OpenRouterLLM, GeminiLLM, BedrockLLM)}
 
 
 def get_llm(spec: str | None = None) -> LLM:

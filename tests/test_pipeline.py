@@ -205,3 +205,17 @@ def test_clean_keeps_patients_without_mrn():
     assert sorted(out["patients"]["patient_id"]) == [1, 2]  # 3 merged into 1, 2 kept despite no MRN
     assert sorted(out["studies"]["patient_id"]) == [1, 1, 2]
     assert "patients: merged duplicate registrations (same MRN): 1" in log
+
+
+def test_bedrock_streams_converse_text():
+    from medrag.providers.llms import get_llm
+
+    class FakeClient:
+        def converse_stream(self, **kw):
+            assert kw["modelId"] == "us.amazon.nova-lite-v1:0" and kw["system"] == [{"text": "sys"}]
+            return {"stream": [{"messageStart": {"role": "assistant"}}, {"contentBlockDelta": {"delta": {"text": "Hello "}}},
+                               {"contentBlockDelta": {"delta": {"text": "there."}}}, {"messageStop": {"stopReason": "end_turn"}}]}
+
+    llm = get_llm("bedrock:us.amazon.nova-lite-v1:0")  # no AWS call until a request is made
+    llm.client = FakeClient()
+    assert llm.complete("sys", "hi") == "Hello there."

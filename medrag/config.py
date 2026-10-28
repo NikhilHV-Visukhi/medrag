@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     openrouter_api_key: str = ""
+    aws_region: str = "us-east-1"  # Bedrock region; credentials come from the AWS chain, not .env
+    aws_profile: str = ""
 
     top_k: int = 8
     candidates: int = 60

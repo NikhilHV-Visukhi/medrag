@@ -23,7 +23,9 @@ httpx
 openai
 anthropic
 google-genai
+boto3
 
 # UI / tests
 streamlit
 pytest
+defusedxml

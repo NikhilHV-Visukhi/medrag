@@ -149,7 +149,7 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 - The judge agrees with the exact checks on 88% of answers. Both disagreements are on the looser checks ("never had", trends), where the judge is likely right.
 - With 16 questions the confidence intervals are wide. Free-tier quotas (Gemini: per model, per day) are the limit; `JUDGE_MODEL` can be any model with quota left.
 
-**Five local models** on the same 16 questions, exact checks only, CPU (`reports/eval_20261028_1044`, `reports/eval_20261028_1350`):
+**Five local models** on the same 18 questions (one per type: 8 easy, 6 hard, 4 documents), exact checks only, CPU (`reports/eval_20261028_1044`, `reports/eval_20261028_1350`):
 
 | Model | Easy | Hard | Documents | Says "not found" when right | Seconds per answer |
 |---|---:|---:|---:|---:|---:|
@@ -162,7 +162,7 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 - qwen3:1.7b is the best speed/accuracy trade-off; qwen3:4b scores the same, is the most careful about saying "not found", and is ten times slower.
 - phi4-mini says "not found" correctly on every easy and documents question, but misses hard cohort and trend questions.
 - Every model fails cohort counts, finding counts and transcription content search: those need retrieval or computed-fact work, not a different model.
-- The 2.5:3b run here (63/67/50%) differs from the judged run above (63/83/50%) on one hard question: with one question per type, a single answer moves a row by 17 points.
+- The 2.5:3b run here (63/67/50%) differs from the judged run above (63/83/50%, 16 questions) on one hard question: with one question per type, a single answer moves a row by 12-25 points.
 
 ## Layout
 

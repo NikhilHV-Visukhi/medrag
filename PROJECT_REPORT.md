@@ -191,6 +191,74 @@ The original `oads_db` PostgreSQL database (`oads.patients`, `oads.studies`, `oa
 
 Neither file is committed to git (the licence of MTSamples is unclear); `.gitignore` excludes `data/documents/*.csv`.
 
+### 4.5 Data inventory: every table, column and record count
+
+**Source files on disk**
+
+| File | Where | Size | Records |
+|---|---|---:|---:|
+| `NLMCXR_reports.tgz` (Open-i archive) | `data/source/openi/` | 1.1 MB | 3,955 XML reports |
+| Extracted Open-i XML | `data/source/openi/xml/ecgen-radiology/` | 32 MB | 3,955 files |
+| `mtsamples.csv` | `data/documents/` | 17 MB | 4,999 rows |
+| `oads_db.sql` (legacy database dump, optional) | `data/source/` | | not used in the main runs |
+| Raw stage (6 parquet tables) | `data/raw/` | 19 MB | see below |
+| Clean stage (6 parquet tables) | `data/clean/` | 14 MB | see below |
+| Index (bge-small) | `indexes/sentence-transformers__BAAI_bge-small-en-v1.5/` | 442 MB | 121,335 chunks |
+
+**Tables, columns and rows (raw → clean)**
+
+| Table | Columns | Raw rows | Clean rows | Removed / merged | Key | Links to |
+|---|---|---:|---:|---:|---|---|
+| `patients` | patient_id, mrn, full_name, gender, date_of_birth, blood_group, city (7) | 20,316 | 20,000 | 316 (5 test records, 311 duplicate registrations merged) | patient_id | |
+| `conditions` | patient_id, condition, diagnosed_on (3) | 35,417 | 35,417 | 0 (re-pointed to merged patients) | (patient_id, condition) | patients |
+| `studies` | study_id, patient_id, accession, study_date, modality, body_part, indication, priority, referring_physician (9) | 92,944 | 89,868 | 3,076 (1,416 duplicates, 558 orphans, 1,102 missing or future dates) | study_id | patients |
+| `reports` | report_id, study_id, radiologist, report_text, status, signed_at (6) | 92,935 | 89,014 | 3,921 (884 empty, 1,369 duplicate reports, the rest belonged to removed studies) | report_id | studies |
+| `ai_analysis` | analysis_id, study_id, model_name, predicted_label, confidence (5) | 91,528 | 89,868 | 1,660 (analyses of removed studies) | analysis_id | studies |
+| `documents` | document_id, patient_id, source, source_id, title, specialty, doc_date, text, labels, description (10) | 8,954 | 6,211 | 2,743 (158 empty or very short, 2,585 duplicate transcriptions merged) | document_id | patients |
+| **Total** | **40 columns** | **342,094** | **330,378** | | | |
+
+How the tables relate:
+
+```
+patients (20,000) ──< conditions (35,417)
+    │
+    ├──< studies (89,868) ──< reports (89,014)        one report per study after cleaning
+    │                     └──< ai_analysis (89,868)   one AI prediction per study
+    │
+    └──< documents (6,211)                            Open-i 3,878 + MTSamples 2,333, linked to patients
+```
+
+**What is in the clean data**
+
+| Measure | Value |
+|---|---|
+| Patients | 20,000 (female 10,134, male 9,587, unknown 279) |
+| Patients with at least one study | 19,897 (103 have none left after cleaning) |
+| Studies per patient | mean 4.5, median 3, max 42 |
+| Chronic conditions | 35,417, mean 2.2 per patient who has any |
+| Studies by modality | X-ray 33,375 · CT 22,438 · Ultrasound 16,314 · MRI 13,328 · PET-CT 2,675 · Mammography 1,738 |
+| Studies by body part | chest 27,518 · abdomen 19,196 · knee 9,285 · spine 9,204 · head 5,554 · brain 5,416 · thyroid 4,176 · hand 3,272 · whole body 2,675 · pelvis 1,834 · breast 1,738 |
+| Studies by priority | routine 61,956 · urgent 17,821 · stat 10,091 |
+| Study dates | 2020-10-02 to 2026-09-29 |
+| Reports by status | final 77,601 · preliminary 7,223 · amended 4,190 |
+| Report length | mean 37 words (27 to 55) |
+| Reports with an abnormal finding | 63.5% |
+| AI predictions without a confidence (cleared as invalid or missing) | 1,640 |
+| Documents | 6,211, attached to 5,377 patients, dated 2020-10-01 to 2026-09-29 |
+| Open-i report length | mean 49 words (15 to 238) |
+| MTSamples transcription length | mean 466 words, median 396 (15 to 3,029) |
+| MTSamples specialties | 39 main specialties; largest: Surgery 969, Radiology 246, General Medicine 156, Urology 154, SOAP / Chart / Progress Notes 143, Neurology 67 |
+
+**From records to chunks**
+
+| Records | Count | Chunks | Chunks per record |
+|---|---:|---:|---:|
+| Reports (study chunks) | 89,014 | 89,014 | 1.0 |
+| Patients with studies (profile chunks) | 19,897 | 19,923 | 1.0 |
+| Open-i reports | 3,878 | 3,880 | 1.0 |
+| MTSamples transcriptions | 2,333 | 8,518 | 3.7 |
+| **Total** | **115,122** | **121,335** | |
+
 ---
 
 ## 5. Data quality checks
@@ -352,6 +420,52 @@ The document text is real, but it has no link to the synthetic patients. To make
 - The patient is picked at random among those of the same gender and within 2 years of the stated age at that date. If none match, gender only; if no gender either, any patient.
 
 Linked by age + gender 1,058, by gender only 1,879, at random 3,274 (mostly Open-i reports, which are de-identified). Seeded (13), so it is reproducible. This link is synthetic and is documented as such.
+
+### 7.5 Ingestion step by step, with counts
+
+`python -m medrag documents` (`cmd_documents` in `medrag/__main__.py`) runs these steps in order:
+
+| # | Step | Code | Open-i | MTSamples | Total |
+|---|---|---|---:|---:|---:|
+| 1 | Download / place the files | Open-i archive in `data/source/openi/`, CSV in `data/documents/` | 3,955 reports | 4,999 rows | 8,954 |
+| 2 | Extract the archive once (safe `data` filter) | `loaders.load_openi` | 3,955 XML files | | |
+| 3 | Parse into one layout: source, source_id, title, specialty, text, labels, description | `loaders.load_openi`, `loaders.load_mtsamples`, `loaders.load_all` | 3,955 | 4,999 | 8,954 |
+| 4 | Write as-is to the **raw** stage (`documents` table, no patient yet) | `store.write_table("raw", "documents", ...)` | | | 8,954 |
+| 5 | Quality check "before" | `prepare.check` | | | 7 checks |
+| 6 | Rebuild section headings (`HEADING:,` → new line) | `prepare.clean` | | 4,118 fixed | 4,118 |
+| 7 | Mark de-identified words `XXXX` → `[redacted]` | `prepare.clean` | 3,411 fixed | 12 fixed | 3,423 |
+| 8 | Tidy whitespace per line | `prepare.clean` | all | all | |
+| 9 | Remove empty or very short (< 15 words) | `prepare.clean` | −77 | −81 | −158 |
+| 10 | Merge duplicate transcriptions (keep one, remember every specialty) | `prepare.clean` | (not applied) | −2,585 | −2,585 |
+| 11 | Link each document to a patient (gender, age, date) | `prepare.link_to_patients` | 3,878 | 2,333 | 6,211 |
+| 12 | Write to the **clean** stage (`documents` table with patient_id and doc_date) | `store.write_table("clean", "documents", ...)` | 3,878 | 2,333 | 6,211 |
+| 13 | Quality check "after", report `reports/quality_documents.md` | `prepare.check` | | | 7 checks |
+
+Then `python -m medrag index` adds them to the index (it reads every clean table, including `documents`):
+
+| # | Step | Code | Result |
+|---|---|---|---|
+| 14 | Chunk each document with a header naming the patient, title, specialty, date and source (MTSamples also gets its one-line summary) | `ingest.documents.document_chunks` | 3,880 Open-i + 8,518 MTSamples chunks |
+| 15 | Tag Open-i chunks as X-ray / chest, and store each document's conclusion line as its impression | `document_chunks`, `_summary_line` | "chest X-ray" filters include them |
+| 16 | Add the patient's documents to their **profile chunk** ("HISTORY: 2 uploaded documents: ...") | `build_chunks` | patient summaries mention them |
+| 17 | Embed only the new chunks; reuse every existing vector | `index.store.build` | 10,749 embedded when MTSamples was added (50 min); 7,428 when Open-i was added (12 min) |
+| 18 | Rebuild BM25 and FAISS over all 121,335 chunks; switch the manifest atomically | `index.store.build` | the app picks up the new build |
+
+### 7.6 How documents join the rest of the data
+
+After ingestion, documents are used everywhere the radiology records are used:
+
+| Where | How documents are used |
+|---|---|
+| Search | Document chunks sit in the same FAISS and BM25 index as the studies, with `doc_type = "document"` |
+| Filters | Words like "note", "transcription", "discharge summary" or a specialty name ("cardiology") set `documents=True`, which limits search to documents and profiles |
+| Patient questions | The patient filter includes their documents, because every document has a `patient_id` |
+| Patient profile | Lists the patient's 15 most recent documents with date, title and specialty |
+| Computed facts | For a patient question, lists up to 20 of their documents with date, title, specialty, id and conclusion |
+| User interface | The Patients tab shows "Uploaded documents" for each patient, with source and specialty |
+| Evaluation | Four document question types, 80 questions (section 18) |
+
+To add more documents later: put the new files in the same folders and run `python -m medrag documents` and then `python -m medrag index`. Only the new chunks are embedded.
 
 ---
 

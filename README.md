@@ -17,7 +17,7 @@ question ──► parse filters ──► filtered dense + BM25 ──► RRF �
 | **Data** | `generate` creates a large synthetic hospital dataset (default 20k patients, about 100k studies). It includes demographics, chronic conditions, CT/MRI/X-ray/US/mammo/PET studies, AI predictions and structured reports with technique, comparison, findings, impression and recommendation. Follow-up scans refer back to earlier ones. Studies per patient follow a heavy-tailed distribution, so some patients have dozens. `import-legacy` loads the original `oads.*` tables instead. |
 | **Data check** | Runs 27 checks: duplicates, orphans, test records, non-standard codes, impossible dates, empty or HTML reports, and confidence values out of range. Writes `reports/quality_raw.md` / `quality_clean.md`. |
 | **Cleaning** | Each rule logs how many rows it changed (`reports/cleaning_log.md`). It merges duplicate registrations by MRN and re-points their studies, maps gender/modality/priority/status synonyms, strips HTML, removes test, orphan and future-dated rows, keeps the best report per study, and converts percent confidences to 0-1. |
-| **Outside documents** | `documents` loads real de-identified documents: 3,955 Open-i chest X-ray reports (NLM, with expert MeSH labels) and, if you add it, the Kaggle MTSamples set of about 5,000 transcriptions across 40 specialties. They are checked and cleaned: de-identification marks become `[redacted]`, headings are rebuilt in transcriptions, duplicates are merged and short or empty ones removed (`reports/quality_documents.md`). Each document is then attached to a synthetic patient of matching gender and age. The text is real; the patient link is synthetic. |
+| **Outside documents** | `documents` loads real de-identified documents: 3,955 Open-i chest X-ray reports (NLM, with expert MeSH labels; put `NLMCXR_reports.tgz` in `data/source/openi/`) and the Kaggle MTSamples set of 4,999 transcriptions across 40 specialties (put `mtsamples.csv` in `data/documents/`; 2,333 remain after merging the same note filed under several specialties). Neither file is in git. They are checked and cleaned: de-identification marks become `[redacted]`, headings are rebuilt in transcriptions, duplicates are merged and short or empty ones removed (`reports/quality_documents.md`). Each document is then attached to a synthetic patient of matching gender and age. The text is real; the patient link is synthetic. |
 | **Ingestion & chunking** | Builds three document types: study reports, patient profiles (conditions, counts, timeline, list of uploaded documents) and uploaded documents. Chunks split on section headings first (any upper-case heading such as `FINDINGS:` or `HISTORY OF PRESENT ILLNESS:`), then on sentences. Every chunk starts with a contextual header (patient, MRN, age, study, date, priority, indication), so it still makes sense when retrieved on its own. |
 | **Embeddings** | Pluggable: `sentence-transformers` (local, default `BAAI/bge-small-en-v1.5`), `ollama`, `openai` or `gemini`. Query/document instruction prefixes are applied per model. Each model gets its own index folder, so you can compare them. Rebuilds are incremental: only new or changed chunks are embedded. |
 | **Index** | Dense vectors use FAISS (exact search, switching to HNSW above 150k chunks). Sparse search uses BM25 via `bm25s`, with stemming and stopwords. Metadata is stored in parquet. |
@@ -90,8 +90,8 @@ Notes:
 
 ## Latest results (2026-10-27)
 
-20,000 patients, 89,868 studies, 3,878 Open-i reports, 112,817 chunks. `BAAI/bge-small-en-v1.5` embeddings, CPU only.
-The first index build took 2 h 50 min; adding the documents re-embedded only 7,428 chunks (12 min).
+20,000 patients, 89,868 studies, 3,878 Open-i reports, 2,333 MTSamples transcriptions, 121,335 chunks. `BAAI/bge-small-en-v1.5` embeddings, CPU only.
+The first index build took 2 h 50 min. Adding Open-i re-embedded only 7,428 chunks (12 min), and MTSamples 10,749 (50 min).
 
 **Retrieval MRR@8** (180 questions with known gold documents; full table with 95% CIs in `reports/eval_20261027_2033/summary.md`):
 
@@ -113,7 +113,19 @@ What this shows:
 - Dense search alone is weak on keyword-style document questions (0.27 on `doc_semantic`). BM25 is weak on paraphrases. Hybrid covers both.
 - Differences of a few hundredths are inside the confidence intervals. Treat the top three rerank configurations as equivalent.
 
-**Answers** from local `qwen2.5:3b` (earlier run, 24 questions): every count exact, every unknown patient correctly answered "not found", 79% of key report facts present, about 52 s per answer on CPU. It misses some reworded findings that a stronger model handles; compare with `eval --llms ... --judge` using a free Gemini or Groq key.
+**Answers** from local `qwen2.5:3b`, judged by `gemini-3-flash-preview` (16 questions, one per type; `reports/eval_20261028_0006`):
+
+| | Easy | Hard | Documents |
+|---|---:|---:|---:|
+| Pass the exact check | 63% | 83% | 50% |
+| Judge correctness (1-5) | 3.6 | 3.2 | 3.0 |
+| Judge faithfulness (1-5) | 4.1 | 3.7 | 3.0 |
+| Seconds per answer (CPU) | 76 | 97 | 82 |
+
+- Lookups by name or MRN, latest study, per-patient counts, "not found", misspelt names, paraphrases and document lookups all score 5/5.
+- The 3B model fails cohort counts ("how many patients had X"), content search across many records and names shared by two patients. A larger model is the next step.
+- The judge agrees with the exact checks on 88% of answers. Both disagreements are on the looser checks ("never had", trends), where the judge is likely right.
+- With 16 questions the confidence intervals are wide. Free-tier quotas (Gemini: per model, per day) are the limit; `JUDGE_MODEL` can be any model with quota left.
 
 ## Layout
 

@@ -17,3 +17,4 @@ sync_state.db
 __pycache__/
 *.pyc
 .pytest_cache/
+data/documents/*.csv

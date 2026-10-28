@@ -1,8 +1,34 @@
 # MedRAG: full project report
 
-Everything done in this project, end to end: data collection, quality checks, cleaning, outside documents, chunking, embedding, indexing, retrieval, answering, evaluation (all question types and metrics), every experiment and result, problems hit along the way, fixes, deployment options and known limits. **Part I** (sections 1-28) describes what was done and the results; **Part II** (sections 29-59) is the technical deep dive: for every stage, the method, where it is in the code, how it works with sample code, and why it was chosen.
+Everything done in this project, end to end: data collection, quality checks, cleaning, outside documents, chunking, embedding, indexing, retrieval, answering, evaluation (all question types and metrics), every experiment and result, problems hit along the way, fixes, deployment options and known limits. **Part I** (sections 1-28) describes what was done and the results; **Part II** (sections 29-59) is the technical deep dive: for every stage, the method, where it is in the code, how it works with sample code, and why it was chosen; **Part III** (sections 60-72) covers the practical and non-technical side.
 
 Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 2026-10-28.
+
+## Executive summary
+
+**What it is.** MedRAG is an assistant that answers questions about patients' imaging records in plain English, for example "What did Asha Rao's last CT show?" or "How many urgent MRIs were done in 2023?". It finds the relevant records first, then has a language model write a short answer that cites them. Counts come straight from the database, so they are exact. If the records don't contain the answer, it says so instead of guessing.
+
+**What it was built and tested on.**
+- 20,000 synthetic patients with 89,868 imaging studies and reports, generated with realistic errors and then cleaned.
+- 6,211 real, public, de-identified documents: Open-i chest X-ray reports and MTSamples transcriptions.
+- In total, 121,335 searchable pieces of text.
+
+**How well it works.**
+- **Finding the right record:** it is among the top 8 sources for 100% of simple questions, 99% of hard ones (lay wording, misspelt names) and 88% of document questions.
+- **Answers:** the best small local models pass 75-88% of exact answer checks. The main weakness is counting patients by finding, which has a planned fix.
+
+**Speed and cost.**
+- **Speed:** search takes 1-8 seconds on a laptop. Answers take about a minute with a local model; a hosted model (AWS Bedrock, already supported) brings that to a few seconds.
+- **Cost:** everything used is free and open source, and no paid service was needed.
+
+**Status.**
+- **Ready:** the pipeline works end to end, with 15 tests, a 313-question evaluation and a web app.
+- **Not ready:** it is not yet ready for real patient data. That needs compliance work, a login and validation on real reports (section 69).
+
+**How the report is organised.**
+- **Part I** (sections 1-28): what was done and the results.
+- **Part II** (sections 29-59): how each stage works in the code, and why.
+- **Part III** (sections 60-72): users, setup, hardware, performance, cost, risks, lessons learned, a glossary and an FAQ.
 
 ---
 
@@ -38,6 +64,8 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
 28. [Git history](#28-git-history)
 
 **Part II: technical deep dive** (method, where, how and why for every stage, with code): sections 29-59, [go to Part II](#part-ii-technical-deep-dive-method-where-how-why)
+
+**Part III: practical and non-technical details** (users, timeline, hardware, setup, models, performance, scaling, reproducibility, cost, risks and licences, lessons, glossary, FAQ): sections 60-72, [go to Part III](#part-iii-practical-and-non-technical-details)
 
 ---
 
@@ -2632,3 +2660,394 @@ Question: **"Has Asha Rao ever had a slipped disc?"**
 | Index updates | Content-hash incremental + versioned atomic swap | Full rebuild, in-place overwrite | 50 min instead of about 3 h; safe while the app runs |
 | LLM | Provider interface; local Ollama default; Bedrock for production | One vendor | Compare models; no lock-in; works offline |
 | Evaluation | Generated test set, 4 retrieval metrics, deterministic checks + LLM judge, bootstrap CIs | Hand-labelled set, judge only | Scale, exactness, cost, honest uncertainty |
+
+---
+
+# Part III: Practical and non-technical details
+
+Everything a reader needs besides the pipeline itself: who it is for and how to use it, the project timeline, the machine and software it ran on, how to set it up from scratch, the models, measured speed and memory, scaling, reproducibility, cost, risks and compliance, lessons learned, a glossary and an FAQ.
+
+## Part III contents
+
+60. [Who it is for and how to use it](#60-who-it-is-for-and-how-to-use-it)
+61. [Project timeline](#61-project-timeline)
+62. [Hardware and software](#62-hardware-and-software)
+63. [Setup from scratch](#63-setup-from-scratch)
+64. [Models used](#64-models-used)
+65. [Speed, memory and disk (measured)](#65-speed-memory-and-disk-measured)
+66. [Scaling: more data and more users](#66-scaling-more-data-and-more-users)
+67. [Reproducibility](#67-reproducibility)
+68. [Cost](#68-cost)
+69. [Risks, ethics, licences and compliance](#69-risks-ethics-licences-and-compliance)
+70. [Lessons learned](#70-lessons-learned)
+71. [Glossary](#71-glossary)
+72. [FAQ](#72-faq)
+
+---
+
+## 60. Who it is for and how to use it
+
+**Users:** radiologists, referring clinicians, clinical coordinators and data or quality teams who need quick answers from imaging records without writing database queries.
+
+**What it is good at**
+
+| Kind of question | Example | Typical result |
+|---|---|---|
+| One study | "What did the CT chest on 2024-03-02 show for Aarini Hayre?" | Exact impression, with the report cited |
+| By MRN | "Summarise the MRI report for MRN0000011 dated 2023-07-11." | Same, found by MRN |
+| Latest | "What was the most recent imaging study for Aarini Hayre?" | Date, modality and impression of the newest study |
+| Patient history | "Summarise Aarini Hayre's imaging history." | Counts by modality, timeline, documents |
+| Has the patient ever had... | "Has Aarini Hayre ever had a kidney stone?" | Yes with the date, or no |
+| Lay words | "Did she have a slipped disc / brain bleed / fatty liver?" | Mapped to the medical finding automatically |
+| Misspelt names | "What did the X-ray show for Aarini Hayr?" | Still finds the patient |
+| Cohort counts | "How many stat MRI studies were done in 2023?" | Exact count from the database (see the limits below) |
+| Documents | "Summarise the uploaded discharge note for MRN0000011." | Answer from the transcription |
+
+**How to ask well**
+- Name the patient (full name or MRN) when the question is about one person.
+- Add the date, modality or body part if you know them ("CT chest", "in March 2024"); they narrow the search.
+- Ask one thing at a time.
+- Read the "Filters" line above the answer: it shows how the question was understood.
+- Check the cited sources [S1], [S2] in the Sources panel before acting on an answer.
+
+**What it does not do**
+- It does not diagnose or recommend treatment beyond what reports say.
+- It does not look at images, only report text.
+- It only knows what is in the indexed records; "not found" means not in the records, not "normal".
+- Cohort counts by finding ("how many patients had pneumonia in 2023") are computed correctly but the small local models often fail to state the number (section 20.6); a cloud model or the planned direct-count fix is needed for those.
+
+---
+
+## 61. Project timeline
+
+| Date and time | Milestone |
+|---|---|
+| 2026-10-27 | Old versions archived; project rebuilt as `medrag` |
+| 2026-10-27 14:15-18:21 | First pipeline runs: synthetic data, cleaning, hash and bge indexes, first answers |
+| 2026-10-27 19:42 | First commit: rebuilt medical RAG pipeline |
+| 2026-10-27 19:58-20:33 | Harder test set, Open-i documents, reranker comparison (MedCPT chosen), ablations |
+| 2026-10-27 21:19 | Commit: outside documents, query expansion, MedCPT, harder evaluation |
+| 2026-10-27 21:46-2026-10-28 00:06 | First judged answer runs (Gemini judge; quota problems solved) |
+| 2026-10-28 00:00 | Code audit; findings 1-6 fixed with tests |
+| 2026-10-28 00:08-01:06 | MTSamples downloaded, cleaned, linked and indexed (50 min) |
+| 2026-10-28 07:49-08:03 | Documents evaluation with MTSamples; results committed |
+| 2026-10-28 10:35 | AWS Bedrock provider added |
+| 2026-10-28 10:44-14:46 | Five local LLMs compared |
+| 2026-10-28 14:59-17:07 | This report written and extended |
+
+About 27 hours from rebuild to the current state, most of it waiting for CPU-bound embedding and LLM runs.
+
+---
+
+## 62. Hardware and software
+
+**Machine (all numbers in this report were measured here)**
+
+| Item | Value |
+|---|---|
+| Processor | Intel Core i7-8665U, 1.90 GHz, 4 cores / 8 threads (laptop) |
+| Memory | 15.8 GB RAM |
+| Graphics | Intel UHD Graphics 620 (integrated; not used, no CUDA GPU) |
+| Operating system | Windows 11 Pro |
+
+**Software versions**
+
+| Package | Version | Used for |
+|---|---|---|
+| Python | 3.14.3 | everything |
+| Ollama | 0.40.11 | local LLMs |
+| pandas | 3.1.0 | data processing |
+| numpy | 2.5.4 | vectors, maths |
+| pyarrow | 26.0.0 | parquet files |
+| faiss-cpu | 1.15.1 | vector index |
+| bm25s | 0.3.15 | keyword index |
+| PyStemmer | 3.1.0 | stemming for BM25 |
+| sentence-transformers | 6.2.0 | embeddings and reranker |
+| transformers | 5.21.0 | model loading |
+| torch | 2.14.1 | model inference on CPU |
+| rapidfuzz | 3.14.6 | fuzzy name matching |
+| Faker | 40.43.0 | synthetic names |
+| streamlit | 1.66.1 | user interface |
+| pydantic-settings | 2.16.1 | configuration |
+| httpx | 0.28.1 | Ollama calls |
+| psycopg | 3.3.6 | PostgreSQL |
+| defusedxml | 0.7.1 | safe XML parsing |
+| anthropic | 2.3.0 | Claude provider |
+| openai | 3.39.0 | OpenAI, Groq, OpenRouter providers |
+| google-genai | 2.33.0 | Gemini provider and judge |
+| boto3 | 1.43.120 | AWS Bedrock provider |
+| pytest | 9.1.1 | tests |
+
+`requirements.txt` lists the packages without versions; this table records the versions that produced the results (see section 67).
+
+---
+
+## 63. Setup from scratch
+
+```bash
+# 1. get the code
+git clone https://github.com/nikhilhv414/medrag.git
+cd medrag
+
+# 2. Python environment
+python -m venv .venv
+.venv/Scripts/activate            # Windows (Linux/macOS: source .venv/bin/activate)
+pip install -r requirements.txt
+
+# 3. settings
+cp .env.example .env              # then set DATA_BACKEND=parquet for a no-database setup, and any API keys you use
+
+# 4. local LLM (install Ollama from ollama.com first)
+ollama pull qwen2.5:3b            # or qwen3:1.7b, phi4-mini, llama3.2:3b
+
+# 5. data + index (about 3 hours on a laptop CPU for the first embedding)
+python -m medrag pipeline
+
+# 6. optional real documents
+#    Open-i: download NLMCXR_reports.tgz into data/source/openi/
+#    MTSamples: put mtsamples.csv into data/documents/
+python -m medrag documents
+python -m medrag index            # only the new chunks are embedded
+
+# 7. use it
+streamlit run app.py
+python -m medrag ask "What was the most recent imaging study for <name>?"
+
+# 8. check it
+pytest
+python -m medrag eval --max-answers 16
+```
+
+The embedding model (bge-small, 129 MB) and reranker (MedCPT, 837 MB) download automatically from Hugging Face on first use and are cached in `~/.cache/huggingface/`.
+
+---
+
+## 64. Models used
+
+| Role | Model | Size on disk | Runs on | Where it comes from |
+|---|---|---:|---|---|
+| Embeddings | `BAAI/bge-small-en-v1.5` (384-d, ~33M parameters) | 129 MB | CPU, in process | Hugging Face |
+| Reranker | `ncbi/MedCPT-Cross-Encoder` (BERT-base size) | 837 MB cache | CPU, in process | Hugging Face |
+| Reranker (tested) | `cross-encoder/ms-marco-MiniLM-L-6-v2` | small | CPU | Hugging Face |
+| Reranker (tested, rejected) | `BAAI/bge-reranker-base` | | CPU | Hugging Face |
+| Answers (default) | `qwen2.5:3b` | 1.9 GB | CPU, Ollama | Ollama library |
+| Answers (compared) | `qwen3:1.7b` | 1.4 GB | CPU, Ollama | Ollama library |
+| Answers (compared) | `qwen3:4b` | 2.5 GB | CPU, Ollama | Ollama library |
+| Answers (compared) | `phi4-mini` (3.8B) | 2.5 GB | CPU, Ollama | Ollama library |
+| Answers (compared) | `llama3.2:3b` | 2.0 GB | CPU, Ollama | Ollama library |
+| Judge | `gemini-3-flash-preview` | cloud | Google AI Studio free tier | API |
+| Answers (production option) | e.g. `us.amazon.nova-lite-v1:0` | cloud | AWS Bedrock | API, not yet tested live |
+
+Each model has its own licence. Check it before any commercial use.
+
+---
+
+## 65. Speed, memory and disk (measured)
+
+**Start-up and search** (one Python process, this laptop, current index):
+
+| Step | Time | Process memory |
+|---|---:|---:|
+| Load index (121,335 chunks) + embedding model | 14.1 s | 1,138 MB |
+| First search (loads MedCPT on first use) | 10.3 s | 1,589 MB |
+| Next searches | 0.6 s for a simple question | about 1.6 GB |
+| Average search in the evaluation | 1.7 s easy · 2.6 s hard · 8 s documents | |
+
+Document questions are slowest because the document filter keeps a large set of rows (all documents and profiles) and document chunks are longer for the reranker to read.
+
+**Answers** (Ollama on CPU, per answer): qwen3:1.7b 44 s · qwen2.5:3b 55 s · phi4-mini 56 s · llama3.2:3b 57 s · qwen3:4b about 450 s. Ollama needs about 2-4 GB more RAM for a 3-4B model.
+
+**Disk**
+
+| Item | Size |
+|---|---:|
+| Source files (Open-i archive + XML, MTSamples) | 1 MB + 32 MB + 17 MB |
+| Raw stage (`data/raw`) | 19 MB |
+| Clean stage (`data/clean`) | 14 MB |
+| Index (bge-small): vectors 186 MB, FAISS 186 MB, BM25 64 MB, chunks 24 MB | 442 MB |
+| Hugging Face model cache (bge-small + MedCPT) | about 1 GB |
+| Ollama models (5 installed) | 10.3 GB |
+
+---
+
+## 66. Scaling: more data and more users
+
+| If this grows... | What happens | What to change |
+|---|---|---|
+| Chunks above 150,000 | Index switches to approximate HNSW automatically | Nothing; HNSW keeps search in milliseconds |
+| Chunks in the millions | Vectors (1.5 KB each) and metadata no longer fit comfortably in RAM; pandas filtering slows | Move metadata filtering into PostgreSQL, vectors into pgvector or a vector database |
+| New reports every day | `watch` re-cleans and re-indexes incrementally | Run `watch` as a service; only new chunks are embedded |
+| Several users at once | One CPU process answers one question at a time; local LLM answers take about a minute each | Use a hosted LLM (Bedrock) for answers; run the app behind a web server with several workers sharing the memory-mapped index |
+| Faster search | MedCPT is most of the search time on CPU | Use MiniLM (0.7 s) or a small GPU for the reranker |
+| Embedding a new large collection | About 3.6 chunks per second on this CPU | Use a GPU or a cloud embedding API for the first build; incremental after that |
+
+---
+
+## 67. Reproducibility
+
+**Fixed seeds**
+
+| What | Seed |
+|---|---:|
+| Synthetic data generation | 7 |
+| Document-to-patient linking | 13 |
+| Test set | 11 (hard +1, documents +2) |
+| Human review sheet sample | 5 |
+| Bootstrap intervals | 0 |
+| Generation "now" date | 2026-10-01 |
+
+With the same code, data files, seeds and package versions, the data, chunks, test questions and retrieval metrics come out the same. LLM answers can still vary slightly, even at temperature 0.1.
+
+**Gaps to know about**
+- `requirements.txt` has no version pins. Section 62 records the versions used; pinning them (`pip freeze > requirements.lock`) is recommended.
+- `reports/` is git-ignored, so the evaluation folders this report cites (`reports/eval_*`) exist on the development machine only. The key tables are copied into this report and the README.
+- The data, indexes and source files are git-ignored too; they are rebuilt with the commands in section 63 (Open-i and MTSamples must be downloaded again).
+
+---
+
+## 68. Cost
+
+| Item | Cost |
+|---|---|
+| Software and models | Free and open source (local) |
+| Data | Synthetic (free); Open-i and MTSamples are free public downloads |
+| Compute | The developer's laptop; no cloud compute used |
+| LLM judge | Google Gemini free tier (limited by daily quotas per model) |
+| AWS Bedrock | Not used yet. It is pay-per-token. A typical question is about 1,100 input tokens and 100-300 output tokens, so cost per question is small for a "lite" model; check current Bedrock prices before planning |
+
+---
+
+## 69. Risks, ethics, licences and compliance
+
+**Data licences**
+- **Open-i** reports are licensed CC BY-NC-ND 4.0: attribution, **non-commercial use only**, no derivatives. Using them in a commercial product is not allowed; for research and demos they must be credited to the US National Library of Medicine / Indiana University.
+- **MTSamples**: the original website's terms are unclear for redistribution; this project downloads them for local use only and does not commit them to git.
+- The synthetic data is generated by the project and has no licence restrictions.
+
+**Privacy and compliance**
+- No real patient data is used. All patients, MRNs and dates are synthetic; Open-i and MTSamples are public, de-identified texts.
+- Linking real documents to synthetic patients is artificial and only for testing. It must never be presented as a real patient's record.
+- Using real patient data requires a HIPAA Business Associate Agreement (or the local equivalent, such as India's DPDP Act or the GDPR) with every service that sees the data, access control, audit logging and data-retention rules. None of these are built yet.
+- Local mode (Ollama) keeps all data on the machine; cloud providers receive the question and retrieved record text.
+
+**Clinical safety**
+- This is decision support, not a medical device. It is not validated for clinical use.
+- Answers can be wrong: the best local models failed 3 of 18 test questions. Every answer must be checked against its cited sources.
+- "Not found" means not in the indexed records, not that the patient is healthy.
+- The AI predictions in the data are deliberately imperfect (86% correct) and are shown as such.
+
+**Bias and coverage**
+- The synthetic data follows simple, uniform rules (for example, disease rises evenly with age); real populations differ.
+- Text is English only; names come from Indian, US and UK name lists.
+- Results on synthetic data overstate what to expect on real, messier reports.
+
+**Security**
+- API keys live only in the git-ignored `.env`; AWS uses its own credential chain.
+- Downloaded archives and XML are opened with safe settings.
+- The Streamlit app has no login; it must not be exposed beyond a trusted machine or network as it stands.
+
+---
+
+## 70. Lessons learned
+
+1. **Filtering on metadata beat every model choice.** Narrowing to the right patient, date and modality doubled retrieval accuracy; no embedding or reranker change came close.
+2. **Do not let an LLM count.** It only sees 8 sources. Computing counts from the database and handing them over is exact and cheap.
+3. **Domain matters for rerankers.** A general web-trained reranker made results worse; a medical one helped.
+4. **Hybrid search is insurance.** BM25 won on documents, dense search on paraphrases; together they were never far from the best.
+5. **Build the test set from the data.** Known answers at scale made every change measurable in minutes, and the traps (shared names, typos, unknown patients) found real bugs.
+6. **Report uncertainty.** With 16-18 answers per model, one question moves a score by 12-25 points; bootstrap intervals kept conclusions honest.
+7. **Check the judge against exact checks.** 88% agreement gave confidence in both, and the disagreements showed where each was weak.
+8. **Small CPU models are usable but slow.** 40-60 seconds per answer is fine for a demo, not for clinicians; a hosted model is the path to real-time.
+9. **Incremental, versioned indexing pays off quickly.** Adding a new collection took 50 minutes instead of 3 hours, and the running app was never broken by a rebuild.
+10. **Audits find what tests miss.** The whole-repository audit found six real bugs (wrong counts, "tell us" read as ultrasound, dropped patients) that the tests at the time passed.
+
+---
+
+## 71. Glossary
+
+**Clinical terms**
+
+| Term | Meaning |
+|---|---|
+| MRN | Medical Record Number: the hospital's unique id for a patient |
+| Accession number | Unique id for one imaging study |
+| Modality | Type of imaging: CT, MRI, XR (X-ray), US (ultrasound), MG (mammography), PET (PET-CT) |
+| Body part | Area imaged: chest, abdomen, head, brain, spine, knee, hand, thyroid, pelvis, breast, whole body |
+| Indication | Why the scan was ordered ("cough and fever") |
+| Findings | What the radiologist saw, in detail |
+| Impression | The radiologist's conclusion: the most important line of a report |
+| Recommendation | Suggested next step in the report |
+| Priority | Urgency of the study: routine, urgent, stat (immediate) |
+| Report status | final (signed), preliminary (draft), amended (corrected) |
+| Follow-up study | A later scan of the same area, compared with the earlier one ("interval improvement", "unchanged", "progression") |
+| BI-RADS, LI-RADS, TI-RADS | Standard risk scores for breast, liver and thyroid findings |
+| De-identified | Personal details removed (Open-i shows them as XXXX) |
+| Transcription | A dictated clinical note typed up (MTSamples) |
+| HIPAA / BAA | US health-privacy law / the contract a service provider must sign to handle patient data |
+
+**Technical terms**
+
+| Term | Meaning |
+|---|---|
+| RAG | Retrieval-augmented generation: find relevant records first, then let an LLM answer from them |
+| LLM | Large language model: the model that writes the answer |
+| Chunk | A piece of a document small enough to search and give to the LLM |
+| Embedding / vector | A list of numbers (384 here) representing the meaning of a text |
+| Cosine similarity | How close two embeddings are in meaning (1 = same) |
+| Dense search | Search by embedding similarity (meaning) |
+| BM25 | Classic keyword search that scores word matches, favouring rare words |
+| Hybrid search | Dense + BM25 together |
+| RRF | Reciprocal Rank Fusion: merges ranked lists using only positions |
+| Reranker / cross-encoder | A model that reads the question and a chunk together to re-score the top candidates |
+| FAISS | Facebook AI Similarity Search: the vector index library |
+| HNSW | A fast approximate nearest-neighbour graph index |
+| Metadata filter | Restricting search by fields like patient, date or modality |
+| Query expansion | Adding medical synonyms to the question ("slipped disc" → "disc herniation") |
+| Token | A word piece; models count input and output in tokens |
+| Context window | How many tokens a model can read at once (8,192 here for Ollama) |
+| Hallucination | An answer the model made up, not supported by the sources |
+| Grounding / citation | Tying each claim to a source [S1], [S2] |
+| Hit@k | Was a right document in the top k? |
+| MRR | Mean Reciprocal Rank: 1 / position of the first right document, averaged |
+| Recall@k | Share of all right documents found in the top k |
+| nDCG@k | Ranking quality that rewards right documents near the top |
+| Bootstrap 95% CI | A range likely to contain the true score, from resampling the results 1,000 times |
+| LLM judge | A second LLM that grades answers |
+| Ablation | Removing one component to measure what it contributes |
+| Parquet | A compressed column-based file format for tables |
+| Ollama | A tool to run open LLMs locally |
+| AWS Bedrock | Amazon's hosted service for running LLMs by API |
+
+---
+
+## 72. FAQ
+
+**Is any of this real patient data?**
+No. Patients, studies and reports are synthetic. Open-i and MTSamples are real but public and de-identified texts, and their link to patients is synthetic.
+
+**Can it be used on our hospital's real data?**
+Technically yes: point `DATA_BACKEND=postgres` at the data, or use `import-legacy` as a template for mapping your tables. Before that you need the compliance steps in section 69, a login, and a validation on real reports.
+
+**Why not just ask ChatGPT or another chatbot?**
+A general chatbot does not know your patients' records, cannot count across 90,000 studies, and would need the data sent to it. This system finds the right records first, counts exactly from the database, cites sources, and can run fully on your own machine.
+
+**Why are answers slow?**
+The LLM runs on a laptop CPU (40-60 s per answer). Search itself takes 1-8 s. A hosted model (AWS Bedrock) or a GPU makes answers take a few seconds.
+
+**How accurate is it?**
+Finding the right record: 100% of easy questions, 99% of hard ones and 88% of document questions have it in the top 8. Answers: the best small local models pass 75-88% of the exact checks; cohort counts by finding are the main weakness. See section 20.
+
+**What does "The records do not contain this information" mean?**
+Nothing in the indexed records answers the question. It does not mean the result is normal.
+
+**How do I add new reports or documents?**
+New database rows: run `python -m medrag watch` (or `clean` + `index`). New documents: put the files in `data/documents/` or `data/source/openi/`, then run `documents` and `index`. Only new chunks are embedded.
+
+**How do I switch the answer model?**
+Set `LLM_PROVIDER` and `LLM_MODEL` in `.env` (for example `ollama` and `qwen3:1.7b`), or type `provider:model` in the app's sidebar.
+
+**Can it read images?**
+No. It reads report text only.
+
+**Where are the detailed results?**
+In `reports/eval_*/summary.md` on the development machine, and summarised in sections 20 and 65 of this report and in the README.

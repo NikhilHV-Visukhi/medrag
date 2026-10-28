@@ -180,6 +180,45 @@ Also, half of all clean modality values are written as the long name ("Ultrasoun
 
 Raw output: 20,316 patients, 35,417 conditions, 92,944 studies, 91,528 AI analyses, 92,935 reports.
 
+#### Generation and dirty injection, step by step
+
+`python -m medrag generate` (`cmd_generate` → `generate()` → `make_dirty()` → `store.write_all("raw", ...)`):
+
+| # | Step | Code | Records |
+|---|---|---|---:|
+| 1 | Build name pools (3 Faker locales, about 400 first and 400 last names each) | `_name_pool` | 20,000 patient names + 60 radiologists + 300 referring physicians |
+| 2 | Create patients with MRN, gender, date of birth, blood group, city | `generate` | 20,000 patients |
+| 3 | Add chronic conditions (count rises with age) | `generate` | 35,417 conditions |
+| 4 | Create each patient's study history (gamma-distributed count, follow-ups of earlier findings) | `generate` | 91,528 studies |
+| 5 | Write one five-section report per study | `_report` | 91,528 reports |
+| 6 | Add one AI prediction per study (86% correct) | `generate` | 91,528 AI analyses |
+| 7 | Write half the modality values as long names ("X-ray", "Ultrasound") | `generate` | about 45,800 studies |
+| 8 | Inject dirty records at a 3% rate | `make_dirty` | see below |
+| 9 | Write the raw stage | `store.write_all("raw", ...)` | 5 tables, 342,094 − 8,954 documents = 333,140 records |
+
+What `make_dirty` added or changed (measured by the raw quality check):
+
+| Problem | Records |
+|---|---:|
+| Duplicate patient registrations (same MRN, new id) | +311 patients |
+| Test / dummy patients | +5 patients |
+| Names with wrong case or extra spaces | 656 |
+| Non-standard gender values | 694 |
+| Missing date of birth | 196 |
+| Future date of birth | 66 |
+| Exact duplicate study rows | +1,416 studies |
+| Orphan studies (patient does not exist) | 567 |
+| Missing study date | 609 |
+| Future study date | 524 |
+| Misspelt modality (plus the long names from step 7) | 29,846 non-standard in total |
+| Non-standard priority | 2,826 |
+| Duplicate reports for the same study | +1,407 reports |
+| Empty report text | 858 |
+| Reports wrapped in HTML | 2,687 |
+| Non-standard report status | 2,847 |
+| Confidence as a percentage or -1 | 3,468 outside 0-1 |
+| Missing confidence | 855 |
+
 ### 4.3 Legacy database (`python -m medrag import-legacy`)
 
 The original `oads_db` PostgreSQL database (`oads.patients`, `oads.studies`, `oads.images`, `oads.analysis`, `oads.reports`; SQL dump in `data/source/oads_db.sql`) can be mapped onto the same raw layout: MRNs become `LEG0000001`, accessions `LEG-ACC-<id>`, modality is taken from the first image of the study. It then goes through the same check, clean and index steps. The main runs used the synthetic data because the legacy data is small.
@@ -377,6 +416,70 @@ Studies left with no usable report are kept: their metadata (date, modality, pri
 
 Clean study dates: 2020-10-02 to 2026-09-29.
 
+### 6.4 Cleaning step by step, rows in and out
+
+`python -m medrag clean` (`cmd_clean` → `store.read_all("raw")` → `clean()` → `store.write_all("clean", ...)` → `quality.run("clean", ...)`). The rules run in this order; the right-hand column is the row count after each step.
+
+**patients**
+
+| # | Step | Changed | Rows after |
+|---|---|---:|---:|
+| | Read raw | | 20,316 |
+| 1 | Remove test / dummy records | −5 | 20,311 |
+| 2 | Remove records with no name | 0 | 20,311 |
+| 3 | Normalise name case and spaces | 654 changed | 20,311 |
+| 4 | Normalise gender | 694 changed | 20,311 |
+| 5 | Clear future date of birth | 66 cleared | 20,311 |
+| 6 | Merge duplicate registrations by MRN (remap kept) | −311 | **20,000** |
+
+**conditions**
+
+| # | Step | Changed | Rows after |
+|---|---|---:|---:|
+| | Read raw | | 35,417 |
+| 1 | Re-point to merged patients, drop duplicate (patient, condition) pairs | 0 removed | **35,417** |
+
+**studies**
+
+| # | Step | Changed | Rows after |
+|---|---|---:|---:|
+| | Read raw | | 92,944 |
+| 1 | Drop exact duplicate rows and duplicate ids | −1,416 | 91,528 |
+| 2 | Re-point to merged patients | 632 changed | 91,528 |
+| 3 | Remove orphans | −558 | 90,970 |
+| 4 | Normalise modality; remove unknown | 29,221 changed, 0 removed | 90,970 |
+| 5 | Normalise priority | 2,761 changed | 90,970 |
+| 6 | Remove missing or future dates | −1,102 | **89,868** |
+
+**reports**
+
+| # | Step | Changed | Rows after |
+|---|---|---:|---:|
+| | Read raw | | 92,935 |
+| 1 | Strip HTML | 2,687 changed | 92,935 |
+| 2 | Remove empty reports | −884 | 92,051 |
+| 3 | Keep only reports of surviving studies | −1,668 | 90,383 |
+| 4 | Normalise status | 2,768 changed | 90,383 |
+| 5 | One report per study (final > amended > preliminary, then latest) | −1,369 | **89,014** |
+
+**ai_analysis**
+
+| # | Step | Changed | Rows after |
+|---|---|---:|---:|
+| | Read raw | | 91,528 |
+| 1 | Keep only analyses of surviving studies | −1,660 | 89,868 |
+| 2 | Convert percentage confidence to 0-1 | 2,602 changed | 89,868 |
+| 3 | Clear confidence still outside 0-1 | 800 cleared | **89,868** |
+
+**After cleaning**
+
+| Check | Result |
+|---|---|
+| Studies with no report (kept for counts) | 854 (89,868 studies − 89,014 reports) |
+| Error-level quality checks failing | 9 before → **0** after |
+| Total records | 333,140 raw → 324,167 clean (without documents) |
+| Files written | `data/clean/*.parquet`, `reports/cleaning_log.md`, `reports/quality_clean.md`, `reports/quality_clean.json` |
+
 ---
 
 ## 7. Outside documents: Open-i and MTSamples
@@ -539,6 +642,39 @@ Each chunk id is a SHA-1 hash of its text (used for incremental re-indexing). Du
 
 (19,897 rather than 20,000 profiles: patients with no study left after cleaning have no profile.)
 
+### 9.5 Chunking step by step
+
+`python -m medrag index` → `cmd_index` → `build_chunks(store.read_all("clean"), max_words=220)`:
+
+| # | Step | Code | In | Out |
+|---|---|---|---:|---:|
+| 1 | Read every clean table | `store.read_all("clean")` | 6 tables | 330,378 records |
+| 2 | Join studies + reports + latest AI prediction + patient | `build_chunks` (merges) | 89,868 studies | 89,868 rows |
+| 3 | Skip studies with no report | `build_chunks` | 89,868 | 89,014 |
+| 4 | Study chunks: header + report + AI line, packed to 220 words | `chunk_document` | 89,014 reports | 89,014 chunks |
+| 5 | Group studies by patient, newest first; list conditions and documents | `build_chunks` | 19,897 patients | 19,897 profiles |
+| 6 | Profile chunks: header + history + up to 40 impressions, 300 words | `chunk_document` | 19,897 profiles | 19,923 chunks (19,871 profiles fit in 1 chunk, 26 needed 2) |
+| 7 | Document chunks: header + cleaned text, 220 words | `document_chunks` | 6,211 documents | 12,398 chunks (Open-i 3,880, MTSamples 8,518) |
+| 8 | Hash every chunk's text (id), drop exact duplicates | `_hash`, `drop_duplicates("chunk_id")` | 121,335 | 121,335 (none were duplicates) |
+
+Chunk size in the result: mean 88 words (study 79, profile 86, document 154), smallest 42, largest 313 (an over-long single sentence). Chunk metadata file: 24 MB.
+
+Example, one study chunk exactly as indexed:
+
+```
+Patient: Aarini Hayre | MRN: MRN0000011 | Patient ID: 11 | male, age 51
+Study: CT chest | Date: 2020-11-15 | Accession: ACC000000040 | Priority: urgent | Report status: preliminary
+Indication: Follow-up of lung nodule
+TECHNIQUE: Contrast-enhanced CT of the chest with axial 1.25 mm reconstructions.
+COMPARISON: None available.
+FINDINGS: Moderate left pleural effusion with adjacent compressive atelectasis.
+IMPRESSION: Moderate left pleural effusion.
+RECOMMENDATION: Consider diagnostic thoracentesis if clinically indicated.
+AI MODEL (DeepCT-Seg v4.2): predicted 'pleural effusion' (confidence 0.86).
+```
+
+(Copied from the index. The patient is synthetic.)
+
 ---
 
 ## 10. Embeddings
@@ -586,6 +722,24 @@ Build history:
 | Adding MTSamples | 10,749 new, 110,586 reused | 50 min (3,025 s) |
 
 Current manifest: 121,335 chunks, 384 dimensions, `IndexFlatIP`, built 2026-10-28 01:06.
+
+### 11.1 Embedding and indexing step by step (latest build)
+
+`cmd_index` → `index.store.build(chunks, embedder, path)`:
+
+| # | Step | Code | Result |
+|---|---|---|---|
+| 1 | Read the previous build's chunk ids and vectors | `build` (via `_files` + manifest version) | previous build (before MTSamples) |
+| 2 | Compare ids: which chunks are new or changed | `todo = [... if cid not in old]` | 10,749 to embed (new MTSamples chunks, plus profiles whose document list changed), 110,586 reused |
+| 3 | Embed the new chunks with bge-small in batches of 256 | `embedder.embed_documents` | 42 batches, 10,749 vectors, about 50 min on CPU (3.6 chunks/s) |
+| 4 | Save all vectors | `np.save` | `vectors-<version>.npy`: 121,335 × 384 float32, 186 MB |
+| 5 | Save chunk text and metadata | `to_parquet` | `chunks-<version>.parquet`: 24 MB |
+| 6 | Build the FAISS index (121,335 < 150,000, so exact) | `faiss.IndexFlatIP` | `dense-<version>.faiss`: 186 MB, 121,335 vectors |
+| 7 | Tokenise (stop words, stemming) and build BM25 | `tokenize`, `bm25s.BM25.index` | `bm25-<version>/`: vocabulary of 145,557 terms, 64 MB |
+| 8 | Write the manifest to a temp file and swap it in atomically | `os.replace` | `manifest.json` points at the new version |
+| 9 | Delete the previous build's files | `_remove_old_builds` | one build left on disk, 442 MB in total |
+
+Earlier builds: first full build about 107k chunks (2 h 50 min, everything embedded); adding Open-i 7,428 new chunks (12 min).
 
 ---
 
@@ -647,6 +801,42 @@ Errors (for example the database briefly down) are printed and the watcher keeps
 
 Each hit records how it was found (`dense+bm25`, `profile`, `latest`), shown in the UI.
 
+### 14.1 Retrieval step by step: two real questions
+
+Measured on the current index (121,335 chunks).
+
+**Question A: "Has Elaine Chanda ever had a slipped disc?"** (a patient question with a lay term)
+
+| # | Step | Code | Result |
+|---|---|---|---|
+| 1 | Parse | `QueryParser.parse` | patient Elaine Chanda (id 14277), finding = disc herniation |
+| 2 | Filter | `filter_rows` | 121,335 → **15** rows (her studies, profile and documents) |
+| 3 | Expand | `expand` | "... slipped disc? (disc herniation; disc extrusion nerve root compression)" |
+| 4 | Dense search | `dense_search` | 15 candidates (all of her rows; fewer than 60) |
+| 5 | BM25 search | `sparse_search` | 15 candidates |
+| 6 | Fuse | `rrf` | 15 |
+| 7 | Rerank top 30 with MedCPT, fuse again | `Reranker.score`, `rrf` | 15 re-ordered |
+| 8 | Pin profile, keep top 8 | `search` | 8 sources: 1 profile + 7 found by both dense and BM25 |
+| 9 | Computed facts | `computed_facts` | "Matching studies: 0 across 0 patients" (she never had one) |
+| 10 | Prompt | `build_prompt` | about 770 words to the LLM |
+
+**Question B: "How many stat priority MRI studies were performed in 2023?"** (a cohort count)
+
+| # | Step | Code | Result |
+|---|---|---|---|
+| 1 | Parse | `QueryParser.parse` | modality = MRI, priority = stat, dates 2023-01-01 to 2023-12-31, aggregate |
+| 2 | Filter | `filter_rows` | 121,335 → **281** rows |
+| 3 | Expand | `expand` | no medical terms, query unchanged |
+| 4 | Dense search | `dense_search` | top 60 of 281 |
+| 5 | BM25 search | `sparse_search` | top 60 of 281 |
+| 6 | Fuse | `rrf` | **109** unique candidates (11 found by both) |
+| 7 | Rerank top 30, fuse again | `Reranker.score`, `rrf` | 30 re-ordered |
+| 8 | Keep top 8 | `search` | 8 sources: 5 found by both, 2 dense only, 1 BM25 only |
+| 9 | Computed facts | `computed_facts` | "Matching studies: 281 across 273 patients", date range, by modality, priority, abnormal count, top findings |
+| 10 | Prompt | `build_prompt` | about 850 words to the LLM |
+
+Search time per question on CPU: 1.7 s (easy), 2.6 s (hard) and 8 s (documents) on average in the evaluation. The MedCPT reranker is most of it.
+
 **Why MedCPT**: it is a cross-encoder trained on PubMed search logs, so it understands medical wording. A general web-trained reranker (`BAAI/bge-reranker-base`) was tested first and made hard-question MRR worse than no reranker (0.845 vs 0.876) while being slower; the fast general `ms-marco-MiniLM-L-6-v2` was roughly neutral. MedCPT with fusion gave the best overall result (section 20.3).
 
 ---
@@ -680,6 +870,19 @@ User message: the question, expansion notes, computed facts, then the 8 sources 
 ### 15.3 Unknown patient
 
 If the parser found a patient name or MRN that does not exist, the answer is returned directly ("No patient matching 'X' was found in the records.") without calling the LLM: faster and no chance of a made-up patient.
+
+### 15.4 Answering step by step
+
+`RAG.ask(question)` (or `RAG.stream` in the app):
+
+| # | Step | Code | Size / time |
+|---|---|---|---|
+| 1 | Retrieve | `Retriever.search` (section 14.1) | 8 sources, 1.7-8 s |
+| 2 | Unknown patient? Answer "not found" without the LLM | `RAG.ask` | instant |
+| 3 | Compute exact facts over all matching rows | `computed_facts` | 2-7 lines for cohort questions; up to about 90 lines for one patient (60-row timeline + 20 documents) |
+| 4 | Build the prompt: question, expansion notes, facts, [S1]-[S8] | `build_prompt` | about 770-850 words (about 1,100 tokens), within the 8,192-token context |
+| 5 | Generate with the system rules, temperature 0.1, up to 1,500 tokens | `LLM.stream` / `complete` | 44-450 s on CPU depending on the model (section 20.6) |
+| 6 | Return answer + sources + facts + timings | `Answer` | shown in the UI, or scored in the evaluation |
 
 ---
 
@@ -757,6 +960,52 @@ Only patients with a unique name are used for lookups, so the right answer is no
 | `doc_transcription_semantic` | Which patient had a cardiology document about: <MTSamples description>? | surname |
 
 Total: 313 questions (125 easy, 108 hard, 80 documents). 258 have a gold document and are used for retrieval scoring; all types are used for answer scoring.
+
+### 18.1a Question counts in the current test set
+
+Built with `--per-type 20`, seed 11 (`reports/eval_20261028_1350/testset.json`):
+
+| Difficulty | Type | Questions | Has a gold document (used for retrieval scoring) |
+|---|---|---:|:-:|
+| easy | lookup_by_name | 20 | yes |
+| easy | lookup_by_mrn | 20 | yes |
+| easy | latest | 20 | yes |
+| easy | count_patient | 20 | yes (the profile) |
+| easy | semantic | 20 | yes |
+| easy | ambiguous_name | 10 | no |
+| easy | count_cohort | 10 | no |
+| easy | not_found | 5 | no |
+| hard | hard_paraphrase_patient | 20 | yes |
+| hard | hard_semantic_cohort | 20 | yes |
+| hard | hard_trend | 20 | yes |
+| hard | hard_typo_name | 18 | yes (2 surnames were too short to misspell) |
+| hard | hard_negative | 20 | no |
+| hard | hard_count_finding | 10 | no |
+| documents | doc_patient_lookup | 20 | yes |
+| documents | doc_semantic | 20 | yes |
+| documents | doc_transcription_lookup | 20 | yes |
+| documents | doc_transcription_semantic | 20 | yes |
+| | **Total** | **313** (125 easy, 108 hard, 80 documents) | **258** |
+
+### 18.1b Evaluation run step by step
+
+`python -m medrag eval --llms "ollama:phi4-mini,ollama:llama3.2:3b" --max-answers 16 --per-type 20` (`cmd_eval`):
+
+| # | Step | Code | Result |
+|---|---|---|---|
+| 1 | Load the index and build the retriever configurations | `cmd_eval`, `run.Config` | 1 configuration (more with `--baselines`, `--rerankers`, `--blends`) |
+| 2 | Build the test set from the index | `testset.build` | 313 questions |
+| 3 | Save the questions and a human review sheet | `testset.save`, `testset.review_sheet` | `testset.json`, `golden_review.csv` (30 rows) |
+| 4 | Run retrieval for every question with a gold document | `eval_retrieval` | 258 searches per configuration |
+| 5 | Score each search | `retrieval_metrics` | Hit@8, MRR, Recall@8, nDCG@8, latency |
+| 6 | Pick the answer sample, the same number from every type | `cmd_eval` | 18 questions (one per type) |
+| 7 | Answer them with each LLM | `eval_generation` → `RAG.ask` | 18 answers per model |
+| 8 | Score each answer with the exact checks | `score_answer` | fact_recall, number, negative, abstain, citations, auto_correct |
+| 9 | Optional: judge each answer | `_judge` (with `--judge`) | 4 scores of 1-5 + reason |
+| 10 | Means with bootstrap 95% intervals, tables by difficulty and type | `ci`, `report` | `summary.md` |
+| 11 | Save every row | `report` | `retrieval.csv` (258 rows per configuration), `generation.csv` (18 rows per model) |
+
+Run times on CPU: retrieval for 258 questions about 17 minutes (sum of the measured search times); answers about 1 minute each for 3-4B models, 7-9 minutes for qwen3:4b. The `--baselines` run adds 5 more configurations, so retrieval takes about 6 times as long.
 
 ### 18.2 Human review sheet
 
@@ -1296,7 +1545,7 @@ if a.strict and any(i["severity"] == "error" for i in issues):
 
 **Why:**
 - **Speed:** vectorised masks check about 90k rows in milliseconds. A row-by-row loop would be about 100 times slower.
-- **Same checks before and after:** running them on raw and on clean data proves the cleaning worked, with numbers. Raw had 13 error-level checks failing; clean has 0.
+- **Same checks before and after:** running them on raw and on clean data proves the cleaning worked, with numbers. Raw had 9 error-level checks failing; clean has 0.
 - **Severity levels:** separate "must fix" from "normalise" from "information".
 - **Two output formats:** Markdown for people, JSON for machines (the UI's data quality tab).
 - **No library:** Great Expectations or pandera would add a framework for 27 checks that fit in about 50 lines.

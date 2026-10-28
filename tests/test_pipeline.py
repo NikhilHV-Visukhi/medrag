@@ -252,3 +252,16 @@ def test_bedrock_streams_converse_text():
     llm = get_llm("bedrock:us.amazon.nova-lite-v1:0")  # no AWS call until a request is made
     llm.client = FakeClient()
     assert llm.complete("sys", "hi") == "Hello there."
+
+
+def test_hidden_unicode_removed(built):
+    from medrag.data.clean import strip_hidden_unicode
+    from medrag.data.quality import check
+
+    raw, cleaned, log, _, _ = built
+    name = "hidden Unicode characters (zero-width, bidi, tag)"
+    assert next(i for i in check(raw) if i["check"] == name)["count"] > 0
+    assert next(i for i in check(cleaned) if i["check"] == name)["count"] == 0
+    assert any("removed hidden Unicode" in line for line in log)
+    s = pd.Series(["IMPRESSION: no​ acute\U000e0041 disease‮", "café", None])
+    assert strip_hidden_unicode(s).tolist() == ["IMPRESSION: no acute disease", "café", ""]

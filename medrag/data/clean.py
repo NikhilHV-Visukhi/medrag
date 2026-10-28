@@ -6,9 +6,22 @@ from datetime import datetime
 import pandas as pd
 
 from medrag.data import catalog as C
+from medrag.data.text_unicode import clean_text as _unicode_clean
 
 NOW = pd.Timestamp(datetime.now())
 TEST_NAME = re.compile(r"\btest\b|dummy|do not use", re.I)
+NON_ASCII = re.compile(r"[^\x00-\x7f]")
+
+
+def strip_hidden_unicode(text: pd.Series) -> pd.Series:
+    """Remove invisible characters (zero-width, bidi overrides, tag chars) and turn exotic spaces into spaces.
+
+    They are invisible to a reader but reach BM25, the embedder and the LLM, where they can hide instructions.
+    The character-level cleaner is slow, so only texts with a non-ASCII character go through it.
+    """
+    text = text.fillna("").astype(str)
+    has = text.str.contains(NON_ASCII)
+    return text.where(~has, text[has].map(lambda t: _unicode_clean(t)[0]))
 
 
 def _norm(series: pd.Series, synonyms: dict, default: str) -> pd.Series:
@@ -91,6 +104,9 @@ def clean(t: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], list[str
     has_html = r["report_text"].fillna("").str.contains(r"<[a-zA-Z/][^>]*>", regex=True)
     r.loc[has_html, "report_text"] = r.loc[has_html, "report_text"].map(_strip_html)
     note("reports: stripped HTML markup", int(has_html.sum()))
+    fixed = strip_hidden_unicode(r["report_text"])
+    note("reports: removed hidden Unicode characters", int((fixed != r["report_text"].fillna("")).sum()))
+    r["report_text"] = fixed
     n = len(r)
     r = r[r["report_text"].fillna("").str.strip() != ""]
     note("reports: removed empty reports", n - len(r))

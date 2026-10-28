@@ -4,6 +4,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from medrag.data.clean import strip_hidden_unicode
+
 HEADING_CSV = re.compile(r"\s*([A-Z][A-Z0-9 /&(),'-]{2,60}):,\s*")  # MTSamples: "HISTORY OF PRESENT ILLNESS:,  The..."
 AGE_RE = re.compile(r"\b(\d{1,3})[- ](?:year|yr)s?[- ]old\b", re.I)
 MALE_RE = re.compile(r"\b(he|his|him|mr|male|man|gentleman|boy)\b", re.I)
@@ -32,6 +34,7 @@ def check(docs: pd.DataFrame) -> list[dict]:
         add("very short (< 15 words)", ((words < 15) & (text.str.strip() != "")).sum(), "error"),
         add("duplicate document (same text, same source)", (mts & docs.assign(_n=text.map(_norm)).duplicated(["source", "_n"])).sum(), "error"),
         add("transcription artefacts (':,' headings)", text.str.contains(r"[A-Z]:,", regex=True).sum()),
+        add("hidden Unicode characters (zero-width, bidi, tag)", (strip_hidden_unicode(text) != text).sum()),
         add("de-identification tokens (XXXX)", text.str.contains("XXXX").sum(), "info"),
         add("Open-i report without IMPRESSION", ((docs["source"] == "openi") & ~text.str.contains("IMPRESSION:")).sum()),
         add("missing patient link", docs["patient_id"].isna().sum() if "patient_id" in docs else n, "info"),
@@ -42,6 +45,9 @@ def clean(docs: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     log: list[str] = []
     d = docs.copy()
     d["text"] = d["text"].fillna("").astype(str)
+    clean_text = strip_hidden_unicode(d["text"])
+    log.append(f"documents: removed hidden Unicode characters: {int((clean_text != d['text']).sum()):,}")
+    d["text"] = clean_text
     fixed = d["text"].str.contains(r"[A-Z]:,", regex=True)
     d["text"] = d["text"].map(lambda t: HEADING_CSV.sub(lambda m: f"\n{m.group(1)}: ", t))
     d["text"] = d["text"].str.replace(r",\s*,", ",", regex=True)

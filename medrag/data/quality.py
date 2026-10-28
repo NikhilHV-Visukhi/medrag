@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 
 from medrag.data import catalog as C
+from medrag.data.clean import strip_hidden_unicode
 
 NOW = pd.Timestamp(datetime.now())
 
@@ -50,6 +51,7 @@ def check(t: dict[str, pd.DataFrame]) -> list[dict]:
     add("reports", "orphan (study does not exist)", ~r["study_id"].isin(known_sids), "error")
     add("reports", "empty report text", text.str.strip() == "", "error")
     add("reports", "contains HTML markup", text.str.contains(r"<[a-zA-Z/][^>]*>", regex=True))
+    add("reports", "hidden Unicode characters (zero-width, bidi, tag)", strip_hidden_unicode(text) != text)
     add("reports", "duplicate report for same study", r["study_id"].duplicated(keep=False))
     add("reports", "non-standard status", ~r["status"].fillna("").isin(C.REPORT_STATUSES))
     add("reports", "missing IMPRESSION section", ~text.str.contains("IMPRESSION", case=False) & (text.str.strip() != ""))

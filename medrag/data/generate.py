@@ -195,4 +195,9 @@ def make_dirty(t: dict[str, pd.DataFrame], rate: float, rng: np.random.Generator
     a.loc[pick(a, 0.3), "confidence"] = -1.0
     a.loc[pick(a, 0.3), "confidence"] = None
     t["ai_analysis"] = a
+
+    # Last, so the random draws above (and every dataset generated before this rule) stay the same.
+    r = t["reports"]
+    m = pick(r) & (r["report_text"] != "")
+    r.loc[m, "report_text"] = r.loc[m, "report_text"].str.replace(" ", "​ ", n=3).str.replace(":", ": ", n=1) + "‮"
     return t

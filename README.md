@@ -16,7 +16,7 @@ question ──► parse filters ──► filtered dense + BM25 ──► RRF �
 |---|---|
 | **Data** | `generate` creates a large synthetic hospital dataset (default 20k patients, about 100k studies). It includes demographics, chronic conditions, CT/MRI/X-ray/US/mammo/PET studies, AI predictions and structured reports with technique, comparison, findings, impression and recommendation. Follow-up scans refer back to earlier ones. Studies per patient follow a heavy-tailed distribution, so some patients have dozens. `import-legacy` loads the original `oads.*` tables instead. |
 | **Data check** | Runs 27 checks: duplicates, orphans, test records, non-standard codes, impossible dates, empty or HTML reports, and confidence values out of range. Writes `reports/quality_raw.md` / `quality_clean.md`. |
-| **Cleaning** | Each rule logs how many rows it changed (`reports/cleaning_log.md`). It merges duplicate registrations by MRN and re-points their studies, maps gender/modality/priority/status synonyms, strips HTML, removes test, orphan and future-dated rows, keeps the best report per study, and converts percent confidences to 0-1. |
+| **Cleaning** | Each rule logs how many rows it changed (`reports/cleaning_log.md`). It merges duplicate registrations by MRN and re-points their studies, maps gender/modality/priority/status synonyms, strips HTML, removes test, orphan and future-dated rows, keeps the best report per study, and converts percent confidences to 0-1. Hidden Unicode (zero-width characters, bidi overrides, tag characters, which can carry invisible prompt-injection text) is removed from reports and outside documents with the Layer A cleaner vendored from [watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover) (MIT, `medrag/data/text_unicode.py`). |
 | **Outside documents** | `documents` loads real de-identified documents: 3,955 Open-i chest X-ray reports (NLM, with expert MeSH labels; put `NLMCXR_reports.tgz` in `data/source/openi/`) and the Kaggle MTSamples set of 4,999 transcriptions across 40 specialties (put `mtsamples.csv` in `data/documents/`; 2,333 remain after merging the same note filed under several specialties). Neither file is in git. They are checked and cleaned: de-identification marks become `[redacted]`, headings are rebuilt in transcriptions, duplicates are merged and short or empty ones removed (`reports/quality_documents.md`). Each document is then attached to a synthetic patient of matching gender and age. The text is real; the patient link is synthetic. |
 | **Ingestion & chunking** | Builds three document types: study reports, patient profiles (conditions, counts, timeline, list of uploaded documents) and uploaded documents. Chunks split on section headings first (any upper-case heading such as `FINDINGS:` or `HISTORY OF PRESENT ILLNESS:`), then on sentences. Every chunk starts with a contextual header (patient, MRN, age, study, date, priority, indication), so it still makes sense when retrieved on its own. |
 | **Embeddings** | Pluggable: `sentence-transformers` (local, default `BAAI/bge-small-en-v1.5`), `ollama`, `openai` or `gemini`. Query/document instruction prefixes are applied per model. Each model gets its own index folder, so you can compare them. Rebuilds are incremental: only new or changed chunks are embedded. |
@@ -111,13 +111,14 @@ Notes:
 20,000 patients, 89,868 studies, 3,878 Open-i reports, 2,333 MTSamples transcriptions, 121,335 chunks. `BAAI/bge-small-en-v1.5` embeddings, CPU only.
 The first index build took 2 h 50 min. Adding Open-i re-embedded only 7,428 chunks (12 min), and MTSamples 10,749 (50 min).
 
-**Retrieval MRR@8** (180 questions with known gold documents; full table with 95% CIs in `reports/eval_20261027_2033/summary.md`):
+**Retrieval MRR@8** (218 questions with known gold documents: 100 easy, 78 hard, 40 documents; full table with 95% CIs in `reports/eval_20261027_2033/summary.md`):
 
 | Configuration | Easy | Hard | Documents | Latency |
 |---|---:|---:|---:|---:|
 | **hybrid + MedCPT reranker (fuse) - default** | 1.000 | 0.905 | 0.808 | 2.8 s |
 | hybrid + MedCPT reranker (replace) | 1.000 | 0.915 | 0.793 | 2.8 s |
 | hybrid + MiniLM reranker (fuse) | 1.000 | 0.885 | 0.797 | 0.7 s |
+| hybrid + MiniLM reranker (replace) | 1.000 | 0.872 | 0.851 | 0.6 s |
 | hybrid, no reranker | 1.000 | 0.875 | 0.762 | 0.1 s |
 | dense only | 0.995 | 0.913 | 0.621 | 0.1 s |
 | BM25 only | 1.000 | 0.865 | 0.837 | 0.05 s |
@@ -126,14 +127,14 @@ The first index build took 2 h 50 min. Adding Open-i re-embedded only 7,428 chun
 
 What this shows:
 - Metadata filtering is the biggest win: it doubles MRR.
-- Medical query expansion adds about 0.09 MRR on hard questions. On wording that is *not* in the dictionary, hybrid search still recovers 98% of gold documents.
+- Medical query expansion adds about 0.11 MRR on hard questions (0.905 vs 0.793). On wording that is *not* in the dictionary, hybrid search still recovers 98% of gold documents (92.6% with the reranker).
 - A general web-trained reranker (`bge-reranker-base`, tested earlier) made results *worse* than no reranker, and was slower. The medical MedCPT reranker helps. Fusing its order with the hybrid order is the safest choice overall.
 - Dense search alone is weak on keyword-style document questions (0.27 on `doc_semantic`). BM25 is weak on paraphrases. Hybrid covers both.
 - Differences of a few hundredths are inside the confidence intervals. Treat the top three rerank configurations as equivalent.
 
-**Documents after adding MTSamples** (80 questions, default configuration; `reports/eval_20261028_0753`): MRR 0.809, Hit@8 0.875.
+**Documents after adding MTSamples** (80 questions, default configuration; `reports/eval_20261028_2246`, after the filter-order fix): MRR 0.859, Hit@8 0.925 (0.809 and 0.875 before).
 Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Finding a document by content alone is harder:
-0.70 for transcriptions and 0.56 for chest X-ray reports, many of which use near-identical wording ("no acute cardiopulmonary disease").
+0.90 for transcriptions (0.70 before the fix) and 0.56 for chest X-ray reports, many of which use near-identical wording ("no acute cardiopulmonary disease").
 
 **Answers** from local `qwen2.5:3b`, judged by `gemini-3-flash-preview` (16 questions, one per type; `reports/eval_20261028_0006`):
 
@@ -151,7 +152,7 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 
 **Seven models, local and cloud**, on the same 18 questions (one per type: 8 easy, 6 hard, 4 documents), exact checks only (`reports/eval_20261028_1044`, `_1350`, `_1847`). The scores are after fixing a test-set bug: the cohort-count question expected 99, but the true answer was 101, which every model gave (re-scored in `reports/model_comparison_7.csv`).
 
-| Model | Runs on | Easy | Hard | Documents | Total | Says "not found" only when right | Cites sources | Seconds per answer (median) |
+| Model | Runs on | Easy | Hard | Documents | Total | Says "not found" only when right | Cites sources | Generation seconds (median) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | **Gemini 3 Flash** | Google cloud | 100% | 83% | 75% | **89%** | 89% | 89% | **3** |
 | Gemini 3.1 Flash-Lite | Google cloud | 100% | 83% | 75% | **89%** | 78% | 67% | 11 |

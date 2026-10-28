@@ -134,6 +134,23 @@ def test_hard_testset(env, built):
     assert {"hard_paraphrase_patient", "hard_negative", "hard_typo_name", "hard_count_finding"} <= kinds
 
 
+def test_count_cohort_answer_counts_every_patient(env, built):
+    from medrag.data import catalog as C
+    from medrag.eval import testset
+    from medrag.retrieval.retriever import Retriever
+
+    meta = Retriever().meta.copy()
+    shared = meta["patient_id"].isin(meta["patient_id"].unique()[::2])
+    meta.loc[shared, "patient_name"] = "Shared Name"  # half the patients share one name
+    studies = meta[(meta["doc_type"] == "study") & (meta["part"] == 0)]
+    for it in (i for i in testset.build(meta, per_type=5) if i["type"] == "count_cohort"):
+        words = it["question"].rstrip("?").split()  # How many <priority> priority <modality> studies were performed in <year>
+        pr, mod_name, year = words[2], words[4], words[-1]
+        mod = next(k for k, v in C.MODALITY_NAMES.items() if v == mod_name)
+        expected = ((studies["study_date"].dt.year == int(year)) & (studies["modality"] == mod) & (studies["priority"] == pr)).sum()
+        assert it["number"] == expected
+
+
 def test_document_cleaning_and_linking(built):
     from medrag.documents.prepare import clean, link_to_patients
 

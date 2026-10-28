@@ -34,6 +34,7 @@ def build(meta: pd.DataFrame, per_type: int = 20, seed: int = 11) -> list[dict]:
     abnormal = abnormal.assign(_key=day + abnormal["modality"] + abnormal["ai_label"].fillna(""))
     unique_case = abnormal[~abnormal["_key"].duplicated(keep=False)]
     abnormal = abnormal[abnormal["patient_name"].isin(unique_name)]
+    all_studies = studies  # cohort counts must include every patient, not only those with a unique name
     studies = studies[studies["patient_name"].isin(unique_name)]
     per_patient = studies.groupby("patient_id")
 
@@ -69,7 +70,7 @@ def build(meta: pd.DataFrame, per_type: int = 20, seed: int = 11) -> list[dict]:
     years = sorted(studies["study_date"].dt.year.unique())
     for _ in range(min(per_type // 2 or 1, 10)):
         y, mod, pr = rnd.choice(years), rnd.choice(C.MODALITIES), rnd.choice(["stat", "urgent"])
-        n = int(((studies["study_date"].dt.year == y) & (studies["modality"] == mod) & (studies["priority"] == pr)).sum())
+        n = int(((all_studies["study_date"].dt.year == y) & (all_studies["modality"] == mod) & (all_studies["priority"] == pr)).sum())
         items.append({"type": "count_cohort", "question": f"How many {pr} priority {C.MODALITY_NAMES[mod]} studies were performed in {y}?",
                       "gold_docs": [], "facts": [], "number": n, "answer": str(n)})
 

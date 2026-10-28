@@ -15,14 +15,14 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
 
 **How well it works.**
 - **Finding the right record:** it is among the top 8 sources for 100% of simple questions, 99% of hard ones (lay wording, misspelt names) and 88% of document questions.
-- **Answers:** the best small local models pass 75-88% of exact answer checks. The main weakness is counting patients by finding, which has a planned fix.
+- **Answers:** the best models, local (qwen3) and cloud (Gemini 3 Flash), pass 89% (16 of 18) of exact answer checks. Gemini 3 Flash answers in about 3 seconds, while local models on the laptop CPU take 45 seconds or more. The two remaining failures are pipeline issues, the same for every model (section 20.7).
 
 **Speed and cost.**
 - **Speed:** search takes 1-8 seconds on a laptop. Answers take about a minute with a local model; a hosted model (AWS Bedrock, already supported) brings that to a few seconds.
 - **Cost:** everything used is free and open source, and no paid service was needed.
 
 **Status.**
-- **Ready:** the pipeline works end to end, with 15 tests, a 313-question evaluation and a web app.
+- **Ready:** the pipeline works end to end, with 16 tests, a 313-question evaluation and a web app.
 - **Not ready:** it is not yet ready for real patient data. That needs compliance work, a login and validation on real reports (section 69).
 
 **How the report is organised.**
@@ -132,7 +132,7 @@ Code layout (about 3,300 lines of Python):
 | `medrag/eval/testset.py` | Builds the test set from the data, with known answers |
 | `medrag/eval/run.py` | Retrieval metrics, answer checks, LLM judge, bootstrap CIs, report |
 | `app.py` | Streamlit UI (Chat, Patients, Data quality, Evaluation tabs) |
-| `tests/test_pipeline.py` | 15 end-to-end and unit tests |
+| `tests/test_pipeline.py` | 16 end-to-end and unit tests |
 
 ---
 
@@ -916,7 +916,7 @@ If the parser found a patient name or MRN that does not exist, the answer is ret
 
 ## 16. LLM providers
 
-`medrag/providers/llms.py`. One interface: `stream(system, user)` yields text; `complete()` joins it and retries on rate limits (HTTP 429, RESOURCE_EXHAUSTED, "rate limit", ThrottlingException) with waits of 15, 30, 45, 60 seconds.
+`medrag/providers/llms.py`. One interface: `stream(system, user)` yields text; `complete()` joins it and retries on rate limits and temporary overload (HTTP 429, RESOURCE_EXHAUSTED, "rate limit", ThrottlingException, 503 UNAVAILABLE) with waits of 15, 30, 45, 60 seconds.
 
 | Provider | Spec example | Notes |
 |---|---|---|
@@ -1121,6 +1121,7 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `eval_20261028_0753` | documents only, 80 questions after MTSamples | |
 | `eval_20261028_1044` | qwen2.5:3b, qwen3:1.7b, qwen3:4b on the same 18 questions | model comparison |
 | `eval_20261028_1350` | phi4-mini, llama3.2:3b on the same 18 questions | model comparison |
+| `eval_20261028_1847` | Gemini 3 Flash and Gemini 3.1 Flash-Lite on the same 18 questions | local vs cloud comparison; found the cohort-count test bug |
 
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set)
 
@@ -1176,7 +1177,7 @@ qwen2.5:3b answering, gemini-3-flash-preview judging, 16 questions (8 easy, 6 ha
 
 | | Easy | Hard | Documents |
 |---|---:|---:|---:|
-| Pass the exact check (auto_correct) | 63% | 83% | 50% |
+| Pass the exact check (auto_correct) | 63% (75% after the test fix in 20.7) | 83% | 50% |
 | Judge correctness (1-5) | 3.6 | 3.2 | 3.0 |
 | Judge faithfulness (1-5) | 4.1 | 3.7 | 3.0 |
 | Judge answer relevance (1-5) | 4.9 | 5.0 | 5.0 |
@@ -1186,7 +1187,7 @@ qwen2.5:3b answering, gemini-3-flash-preview judging, 16 questions (8 easy, 6 ha
 | Seconds per answer (CPU) | 76 | 97 | 82 |
 
 - Scored correctly: lookups by name and MRN, latest study, per-patient counts, not found, misspelt names, paraphrases, document lookups.
-- Failed: cohort counts, ambiguous names (shared by two patients), semantic search across many records, finding counts, document content search.
+- Failed: ambiguous names (shared by two patients), semantic search across many records, finding counts, document content search. The cohort count was also marked as failed, but the model's answer (101) was right; the test expected 99 because of a test-set bug fixed later (section 20.7).
 - Judge vs exact checks agree on **88%** of answers; both disagreements are on the looser checks ("never had", trends), where the judge is probably right.
 
 ### 20.6 Five local models on the same 18 questions (`eval_20261028_1044`, `eval_20261028_1350`)
@@ -1231,9 +1232,74 @@ Conclusions:
 - **qwen3:4b** scores the same, is the most careful and cites best, but is 10 times slower (7-9 minutes per answer on CPU).
 - **phi4-mini** is reliable at "not found" on easy and document questions but misses hard cohort and trend questions.
 - **llama3.2:3b** matches qwen3 on easy and hard but is weaker on documents and rarely cites.
-- **Every model fails** cohort counts, finding counts and transcription content search: those need retrieval or computed-fact work, not a different model.
+- **Every model failed** the cohort count, the finding count and transcription content search. Section 20.7 shows that the cohort-count failure was a test-set bug (every model was right), and explains the other two.
 - The default was kept at qwen2.5:3b by the user's choice; `LLM_MODEL=qwen3:1.7b` in `.env` switches.
 - With one question per type, one answer moves a row by 12 points (easy), 17 (hard) or 25 (documents): treat differences as a direction, not proof. (qwen2.5:3b scored 83% on hard in the judged run and 67% here because of one question.)
+
+### 20.7 Local models vs Gemini (7 models, corrected scoring)
+
+Gemini 3 Flash and Gemini 3.1 Flash-Lite (Google AI Studio free tier) answered the same 18 questions as the five local models, with the same retrieval, prompt and checks (`reports/eval_20261028_1847`).
+
+**A test-set bug found by this comparison.**
+- **What was wrong:** the cohort-count question ("How many urgent priority PET-CT studies were performed in 2023?") expected **99**, but the true number in the data is **101**. The question builder counted only patients with a unique name.
+- **Effect:** all 7 models answered 101, so all 7 were marked wrong on a question they got right.
+- **Fix:** `testset.build` now counts every patient, and a regression test was added.
+- **Re-scoring:** all 126 saved answers were re-scored against the fixed test set, without calling any model again (`reports/model_comparison_7.csv`). The table in 20.6 shows the scores from before this fix.
+
+| Model | Runs on | Easy (8) | Hard (6) | Documents (4) | **Total (18)** | Says "not found" only when right | Cites sources | Seconds per answer (mean / median) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **Gemini 3 Flash** | Google cloud | 100% | 83% | 75% | **89% (16)** | 89% | 89% | **6.8 / 3.1** |
+| Gemini 3.1 Flash-Lite | Google cloud | 100% | 83% | 75% | **89% (16)** | 78% | 67% | 15.3 / 11.2 * |
+| **qwen3:1.7b** | laptop CPU | 100% | 83% | 75% | **89% (16)** | 44% | 56% | 43 / 46 |
+| qwen3:4b | laptop CPU | 100% | 83% | 75% | **89% (16)** | 83% | 89% | 446 / 499 |
+| llama3.2:3b | laptop CPU | 100% | 83% | 50% | 83% (15) | 72% | 22% | 57 / 55 |
+| phi4-mini (3.8B) | laptop CPU | 100% | 50% | 75% | 78% (14) | 83% | 39% | 56 / 57 |
+| qwen2.5:3b (default) | laptop CPU | 75% | 67% | 50% | 67% (12) | 89% | 17% | 55 / 54 |
+
+\* Google returned "503 high demand" on 4 Flash-Lite answers. They were retried after 503 was added to the retried errors, and all 4 passed. Flash-Lite's times include waiting on a busy server.
+
+Pass/fail by question type:
+
+| Type | Gemini 3 Flash | Gemini 3.1 Flash-Lite | qwen3:1.7b | qwen3:4b | llama3.2:3b | phi4-mini | qwen2.5:3b |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| lookup_by_name | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| lookup_by_mrn | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| latest | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| count_patient | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| count_cohort | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ambiguous_name | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| semantic | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| not_found | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| hard_paraphrase_patient | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| hard_semantic_cohort | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| hard_trend | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
+| hard_typo_name | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| hard_negative | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| hard_count_finding | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| doc_patient_lookup | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| doc_semantic | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
+| doc_transcription_lookup | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| doc_transcription_semantic | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+Conclusions:
+- **Same accuracy:** on these questions the cloud models are no more accurate than the best local ones. Gemini 3 Flash, Gemini 3.1 Flash-Lite, qwen3:1.7b and qwen3:4b all pass 16 of 18. Retrieval and the computed facts do most of the work, so a small model is enough to read them out.
+- **Gemini 3 Flash is the best all-rounder:**
+  - it has the top accuracy;
+  - it says "not found" correctly 89% of the time and cites sources in 89% of answers;
+  - its median answer time is 3 seconds, which is 15 times faster than qwen3:1.7b and about 150 times faster than qwen3:4b on this laptop.
+- **qwen3:4b** is as careful and cites as well as Gemini 3 Flash, but takes 7-8 minutes per answer.
+- **qwen3:1.7b** matches the accuracy but often answers when it should say "not found" (44%).
+- **Two questions fail for every model, Gemini included.** That makes them pipeline problems, not model problems:
+  - **`hard_count_finding`** ("How many patients had *stones in the gallbladder* reported on imaging in 2020?"):
+    - The phrase is deliberately not in the expansion dictionary, so no finding filter is applied.
+    - The computed facts therefore count every 2020 study (3,683 studies, 3,190 patients) instead of the 72 patients with gallstones.
+    - Possible fixes: a fallback that recognises findings by meaning, or a larger dictionary.
+  - **`doc_transcription_semantic`** ("Which patient had a orthopedic document about: Patient with *back* and hip pain?"):
+    - The word "back" sets a spine body-part filter.
+    - Documents have no body part, so nothing matches. The relaxation order then drops the *documents* filter first, and the search runs over spine X-rays.
+    - Fix: relax body part and modality before the documents filter.
+- **Privacy trade-off:** Gemini receives the question and the retrieved record text. That is fine for this synthetic and public data, but not for real patient data without a data-processing agreement (section 69). The local models keep everything on the machine.
+- **Small sample:** 18 questions per model, so one answer moves a total by about 6 points.
 
 ---
 
@@ -1255,6 +1321,10 @@ A whole-repository audit was run. Findings 1-6 were fixed with tests (finding 7)
 | 10 | (open) a partly extracted Open-i archive is never repaired | |
 | 11 | (open) the "abnormal" rule is written in two places | |
 | 12 | (open) duplicated not-found message; unused `clean_dir` property | |
+| 13 | Found later: the cohort-count test answer excluded patients with shared names (expected 99, truth 101) | Fixed in `testset.build`; regression test; 126 answers re-scored (section 20.7) |
+| 14 | Found later: Gemini 503 "high demand" errors were not retried | 503 / UNAVAILABLE added to the retried errors |
+| 15 | (open) a body-part word in a document question drops the documents filter | Relax body part and modality before documents |
+| 16 | (open) finding counts ignore the finding when its wording is not in the dictionary | Fallback finding detection by meaning, or a larger dictionary |
 
 The new tests were confirmed to fail on the old code (via `git stash`) and pass on the new.
 
@@ -1262,7 +1332,7 @@ The new tests were confirmed to fail on the old code (via `git stash`) and pass 
 
 ## 22. Tests
 
-`pytest` — 15 tests, all passing. They build a small dataset with the hash embedder (no downloads) and run the real pipeline.
+`pytest` — 16 tests, all passing. They build a small dataset with the hash embedder (no downloads) and run the real pipeline.
 
 | Test | Checks |
 |---|---|
@@ -1281,6 +1351,7 @@ The new tests were confirmed to fail on the old code (via `git stash`) and pass 
 | `test_short_modality_codes_only_in_capitals` | audit finding 2 |
 | `test_clean_keeps_patients_without_mrn` | audit finding 3 |
 | `test_bedrock_streams_converse_text` | Bedrock provider with a fake client |
+| `test_count_cohort_answer_counts_every_patient` | cohort-count answers in the test set include patients with shared names (finding 13) |
 
 ---
 
@@ -1333,7 +1404,8 @@ On a CPU laptop local models take 40 to 450 seconds per answer. For real-time us
 ## 26. Known limits and next steps
 
 **Limits**
-- Cohort counts ("how many patients had X in 2023") and finding counts fail with every local model even though the computed facts contain the number: the small models do not reliably pick it. Fix in code: answer pure count questions directly from the computed facts.
+- Counting patients by a finding fails when the question's wording is not in the expansion dictionary ("stones in the gallbladder"). No finding filter is applied, so the computed facts count every study. All 7 models fail it, Gemini included (section 20.7). Fix: recognise findings by meaning as a fallback, or grow the dictionary.
+- A document question that mentions a body part ("back pain") loses the documents filter and searches radiology studies instead (section 20.7). Fix: relax body part and modality before the documents filter.
 - Finding a document by content alone is weak (Open-i 0.56 MRR) because many reports are nearly identical.
 - 16-18 answers per model is a small sample; confidence intervals are wide.
 - The data is synthetic; real reports are more varied.
@@ -2371,7 +2443,7 @@ def complete(self, system, user, max_tokens=1500, retries=4):
             return "".join(self.stream(system, user, max_tokens))
         except Exception as e:
             msg = str(e)
-            if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException")):
+            if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException", "503", "UNAVAILABLE")):
                 raise
             time.sleep(15 * (attempt + 1))                                   # 15, 30, 45, 60 s
 
@@ -2598,7 +2670,7 @@ text = st.write_stream(stream)                                   # token-by-toke
 ## 57. Tests
 
 **Method:** pytest with a session fixture that builds a small dataset and index using the hash embedder.
-**Where:** `tests/conftest.py`, `tests/test_pipeline.py` (15 tests).
+**Where:** `tests/conftest.py`, `tests/test_pipeline.py` (16 tests).
 
 ```python
 def test_count_is_zero_when_patient_lacks_the_modality(env, built):
@@ -2714,7 +2786,7 @@ Everything a reader needs besides the pipeline itself: who it is for and how to 
 - It does not diagnose or recommend treatment beyond what reports say.
 - It does not look at images, only report text.
 - It only knows what is in the indexed records; "not found" means not in the records, not "normal".
-- Cohort counts by finding ("how many patients had pneumonia in 2023") are computed correctly but the small local models often fail to state the number (section 20.6); a cloud model or the planned direct-count fix is needed for those.
+- Counting patients by a finding works when the wording is known ("kidney stone", "pneumonia"). Unusual wording ("stones in the gallbladder") is not recognised yet, and the count then covers all studies (section 20.7).
 
 ---
 
@@ -2835,7 +2907,8 @@ The embedding model (bge-small, 129 MB) and reranker (MedCPT, 837 MB) download a
 | Answers (compared) | `qwen3:4b` | 2.5 GB | CPU, Ollama | Ollama library |
 | Answers (compared) | `phi4-mini` (3.8B) | 2.5 GB | CPU, Ollama | Ollama library |
 | Answers (compared) | `llama3.2:3b` | 2.0 GB | CPU, Ollama | Ollama library |
-| Judge | `gemini-3-flash-preview` | cloud | Google AI Studio free tier | API |
+| Judge, and answers (compared) | `gemini-3-flash-preview` | cloud | Google AI Studio free tier | API |
+| Answers (compared) | `gemini-3.1-flash-lite-preview` | cloud | Google AI Studio free tier | API |
 | Answers (production option) | e.g. `us.amazon.nova-lite-v1:0` | cloud | AWS Bedrock | API, not yet tested live |
 
 Each model has its own licence. Check it before any commercial use.
@@ -2960,6 +3033,7 @@ With the same code, data files, seeds and package versions, the data, chunks, te
 8. **Small CPU models are usable but slow.** 40-60 seconds per answer is fine for a demo, not for clinicians; a hosted model is the path to real-time.
 9. **Incremental, versioned indexing pays off quickly.** Adding a new collection took 50 minutes instead of 3 hours, and the running app was never broken by a rebuild.
 10. **Audits find what tests miss.** The whole-repository audit found six real bugs (wrong counts, "tell us" read as ultrasound, dropped patients) that the tests at the time passed.
+11. **When every model fails the same question, suspect the test or the pipeline.** Adding Gemini showed that the "cohort count" failure shared by all local models was a bug in the expected answer, not in the models.
 
 ---
 
@@ -3035,7 +3109,7 @@ A general chatbot does not know your patients' records, cannot count across 90,0
 The LLM runs on a laptop CPU (40-60 s per answer). Search itself takes 1-8 s. A hosted model (AWS Bedrock) or a GPU makes answers take a few seconds.
 
 **How accurate is it?**
-Finding the right record: 100% of easy questions, 99% of hard ones and 88% of document questions have it in the top 8. Answers: the best small local models pass 75-88% of the exact checks; cohort counts by finding are the main weakness. See section 20.
+Finding the right record: 100% of easy questions, 99% of hard ones and 88% of document questions have it in the top 8. Answers: the best models, local qwen3 and cloud Gemini 3 Flash, pass 89% (16 of 18) of the exact checks. The known weaknesses are counting by unusual finding wording, and document questions that mention a body part. See sections 20.6-20.7.
 
 **What does "The records do not contain this information" mean?**
 Nothing in the indexed records answers the question. It does not mean the result is normal.

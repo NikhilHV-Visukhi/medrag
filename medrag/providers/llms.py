@@ -26,9 +26,9 @@ class LLM:
         for attempt in range(retries + 1):
             try:
                 return "".join(self.stream(system, user, max_tokens))
-            except Exception as e:  # free tiers rate-limit often: wait and retry on 429 / quota errors only
+            except Exception as e:  # free tiers rate-limit often: wait and retry on 429 / quota / temporary overload only
                 msg = str(e)
-                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException")):
+                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException", "503", "UNAVAILABLE")):
                     raise
                 time.sleep(15 * (attempt + 1))
 

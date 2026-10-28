@@ -139,30 +139,34 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 
 | | Easy | Hard | Documents |
 |---|---:|---:|---:|
-| Pass the exact check | 63% | 83% | 50% |
+| Pass the exact check | 63% (75% after the test fix below) | 83% | 50% |
 | Judge correctness (1-5) | 3.6 | 3.2 | 3.0 |
 | Judge faithfulness (1-5) | 4.1 | 3.7 | 3.0 |
 | Seconds per answer (CPU) | 76 | 97 | 82 |
 
 - Lookups by name or MRN, latest study, per-patient counts, "not found", misspelt names, paraphrases and document lookups all score 5/5.
-- The 3B model fails cohort counts ("how many patients had X"), content search across many records and names shared by two patients. A larger model is the next step.
+- The 3B model fails finding counts ("how many patients had X"), content search across many records and names shared by two patients. (It was also marked wrong on the cohort count, but its answer was right; see the test fix below.)
 - The judge agrees with the exact checks on 88% of answers. Both disagreements are on the looser checks ("never had", trends), where the judge is likely right.
 - With 16 questions the confidence intervals are wide. Free-tier quotas (Gemini: per model, per day) are the limit; `JUDGE_MODEL` can be any model with quota left.
 
-**Five local models** on the same 18 questions (one per type: 8 easy, 6 hard, 4 documents), exact checks only, CPU (`reports/eval_20261028_1044`, `reports/eval_20261028_1350`):
+**Seven models, local and cloud**, on the same 18 questions (one per type: 8 easy, 6 hard, 4 documents), exact checks only (`reports/eval_20261028_1044`, `_1350`, `_1847`). The scores are after fixing a test-set bug: the cohort-count question expected 99, but the true answer was 101, which every model gave (re-scored in `reports/model_comparison_7.csv`).
 
-| Model | Easy | Hard | Documents | Says "not found" when right | Seconds per answer |
-|---|---:|---:|---:|---:|---:|
-| **qwen3:1.7b** | 88% | 83% | 75% | 25-63% | 44 |
-| qwen3:4b | 88% | 83% | 75% | 75-88% | 450 |
-| llama3.2:3b | 88% | 83% | 50% | 50-88% | 57 |
-| phi4-mini (3.8B) | 88% | 50% | 75% | 50-100% | 56 |
-| qwen2.5:3b | 63% | 67% | 50% | 75-100% | 55 |
+| Model | Runs on | Easy | Hard | Documents | Total | Says "not found" only when right | Cites sources | Seconds per answer (median) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **Gemini 3 Flash** | Google cloud | 100% | 83% | 75% | **89%** | 89% | 89% | **3** |
+| Gemini 3.1 Flash-Lite | Google cloud | 100% | 83% | 75% | **89%** | 78% | 67% | 11 |
+| **qwen3:1.7b** | laptop CPU | 100% | 83% | 75% | **89%** | 44% | 56% | 46 |
+| qwen3:4b | laptop CPU | 100% | 83% | 75% | **89%** | 83% | 89% | 499 |
+| llama3.2:3b | laptop CPU | 100% | 83% | 50% | 83% | 72% | 22% | 55 |
+| phi4-mini (3.8B) | laptop CPU | 100% | 50% | 75% | 78% | 83% | 39% | 57 |
+| qwen2.5:3b (default) | laptop CPU | 75% | 67% | 50% | 67% | 89% | 17% | 54 |
 
-- qwen3:1.7b is the best speed/accuracy trade-off; qwen3:4b scores the same, is the most careful about saying "not found", and is ten times slower.
-- phi4-mini says "not found" correctly on every easy and documents question, but misses hard cohort and trend questions.
-- Every model fails cohort counts, finding counts and transcription content search: those need retrieval or computed-fact work, not a different model.
-- The 2.5:3b run here (63/67/50%) differs from the judged run above (63/83/50%, 16 questions) on one hard question: with one question per type, a single answer moves a row by 12-25 points.
+- **Accuracy:** the cloud models are no more accurate than the best local ones (16 of 18 each). Retrieval and the computed facts do most of the work.
+- **Gemini 3 Flash is the best all-rounder:** top accuracy, careful about "not found", cites its sources, and answers in about 3 s. qwen3:4b is as careful but takes 7-8 minutes on CPU.
+- **Two questions fail for every model, so they are pipeline issues:**
+  - a finding count whose wording ("stones in the gallbladder") is not in the expansion dictionary;
+  - a document question where "back" set a spine filter, which pushed out the documents filter.
+- **Privacy:** Gemini sees the question and the retrieved records. That is fine for synthetic and public data, not for real patient data without an agreement.
 
 ## Layout
 

@@ -45,6 +45,36 @@ def chunk_text(body: str, max_words: int = 220, overlap_sentences: int = 1) -> l
     return chunks
 
 
-def chunk_document(header: str, body: str, max_words: int = 220) -> list[str]:
+RECURSIVE_SEPARATORS = ("\n\n", "\n", ". ", "; ", ", ", " ")
+
+
+def recursive_split(text: str, max_words: int = 220, overlap_words: int = 40, seps: tuple[str, ...] = RECURSIVE_SEPARATORS) -> list[str]:
+    """Generic recursive splitting (as in LangChain's RecursiveCharacterTextSplitter, counted in words):
+    split on the coarsest separator, split oversized pieces on the next one, then pack the pieces up to
+    max_words, starting each new chunk with the last `overlap_words` words of the previous one.
+    It ignores section headings, so it is the baseline for the section-aware splitter."""
+    def pieces(t: str, level: int) -> list[str]:
+        if _words(t) <= max_words or level == len(seps):
+            return [t]
+        parts = [p for p in t.split(seps[level]) if p.strip()]
+        if seps[level].strip():  # keep the punctuation on the piece it ended
+            parts = [p + seps[level].strip() for p in parts[:-1]] + parts[-1:]
+        return [q for p in parts for q in pieces(p, level + 1)]
+
+    chunks, cur = [], []
+    for p in pieces(text.strip(), 0):
+        w = p.split()
+        if cur and len(cur) + len(w) > max_words:
+            chunks.append(" ".join(cur))
+            cur = cur[-overlap_words:] if overlap_words else []
+        cur += w
+    if cur:
+        chunks.append(" ".join(cur))
+    return chunks
+
+
+def chunk_document(header: str, body: str, max_words: int = 220, strategy: str = "section", overlap_words: int = 40) -> list[str]:
+    """strategy: 'section' (section-aware with sentence overlap, the default) or 'recursive' (generic, word overlap)."""
     budget = max(60, max_words - _words(header))
-    return [f"{header}\n{c}" for c in chunk_text(body, budget)]
+    parts = recursive_split(body, budget, overlap_words) if strategy == "recursive" else chunk_text(body, budget)
+    return [f"{header}\n{c}" for c in parts]

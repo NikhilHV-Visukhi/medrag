@@ -21,6 +21,27 @@ if not indexes:
     st.stop()
 
 
+from medrag.security import audit  # noqa: E402
+from medrag.security.access import LOCAL_ADMIN, auth_enabled, authenticate  # noqa: E402
+
+if auth_enabled():
+    if "user" not in st.session_state:
+        with st.form("login"):
+            st.subheader("Sign in")
+            username, password = st.text_input("User name"), st.text_input("Password", type="password")
+            if st.form_submit_button("Sign in"):
+                if (u := authenticate(username, password)) is not None:
+                    st.session_state.user = u
+                    audit.append("audit", {"user": u.username, "role": u.role, "event": "sign-in"})
+                    st.rerun()
+                audit.append("audit", {"user": username, "event": "failed sign-in"})
+                st.error("Wrong user name or password.")
+        st.stop()
+    user = st.session_state.user
+else:
+    user = LOCAL_ADMIN
+
+
 @st.cache_resource(show_spinner="Loading index...")
 def load_retriever(path: str, built_at: str) -> Retriever:
     return Retriever(Index(Path(path)))
@@ -38,11 +59,18 @@ with st.sidebar:
     top_k = st.slider("Sources per answer", 3, 20, s.top_k)
     if st.button("Clear chat"):
         st.session_state.messages = []
+    st.caption(f"Signed in as **{user.username}** ({user.role})" if auth_enabled()
+               else "Local mode: no sign-in. Set USERS_FILE to require one.")
+    if auth_enabled() and st.button("Sign out"):
+        st.session_state.clear()
+        st.rerun()
 
 retriever = load_retriever(str(idx_path), manifest["built_at"])
 meta = retriever.meta
+allowed = user.allowed_mask(meta)
+visible = meta if allowed is None else meta[allowed]  # the Patients tab shows only records this user may see
 
-chat_tab, patient_tab, quality_tab, eval_tab = st.tabs(["Chat", "Patients", "Data quality", "Evaluation"])
+chat_tab, patient_tab, quality_tab, eval_tab, audit_tab = st.tabs(["Chat", "Patients", "Data quality", "Evaluation", "Audit"])
 
 # ---------------- chat ----------------
 with chat_tab:
@@ -58,7 +86,7 @@ with chat_tab:
         with st.chat_message("assistant"):
             try:
                 rag = RAG(retriever, get_llm(llm_spec))
-                r, facts, stream = rag.stream(question, mode)
+                r, facts, stream = rag.stream(question, mode, user=user)
                 st.caption(f"Filters: {r.filters.describe()}" + (f" · {' '.join(r.notes)}" if r.notes else ""))
                 text = st.write_stream(stream)
             except Exception as e:
@@ -79,8 +107,11 @@ with chat_tab:
 
 # ---------------- patients ----------------
 with patient_tab:
-    q = st.text_input("Search by name, MRN or patient ID")
-    if q:
+    q = st.text_input("Search by name, MRN or patient ID", disabled=not user.sees_records)
+    if not user.sees_records:
+        st.info(f"Your role ({user.role}) does not give access to individual patient records.")
+    if q and user.sees_records:
+        meta = visible
         people = meta[meta["doc_type"] == "patient"].drop_duplicates("patient_id")
         ql = q.strip().lower()
         found = people[people["patient_name"].str.lower().str.contains(ql, regex=False) | (people["mrn"].str.lower() == ql)
@@ -125,3 +156,15 @@ with eval_tab:
         if gen.exists():
             st.subheader("Answers")
             st.dataframe(pd.read_csv(gen), width="stretch")
+
+# ---------------- audit ----------------
+with audit_tab:
+    if user.role not in ("admin", "auditor"):
+        st.info("Only admins and auditors can read the audit log.")
+    else:
+        log = audit.read("audit")
+        st.write(f"{len(log):,} audit events")
+        if len(log):
+            st.dataframe(log.sort_values("ts", ascending=False).head(500), hide_index=True, width="stretch")
+        st.subheader("Request metrics")
+        st.markdown(audit.metrics_summary())

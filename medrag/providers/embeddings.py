@@ -1,6 +1,7 @@
 """Embedding providers behind one interface: embed_documents / embed_query -> L2-normalised float32."""
 import hashlib
 import re
+from collections import OrderedDict
 
 import numpy as np
 
@@ -46,6 +47,20 @@ class Embedder:
         return _normalise(self._embed([self.q_prefix + text]))[0]
 
 
+def _cached_query(embed_query):
+    """Wrap an embed_query method with a small LRU cache: repeated questions skip the model."""
+    def wrapper(self, text):
+        cache = self.__dict__.setdefault("_qcache", OrderedDict())
+        if text in cache:
+            cache.move_to_end(text)
+            return cache[text]
+        v = cache[text] = embed_query(self, text)
+        if len(cache) > 1024:
+            cache.popitem(last=False)
+        return v
+    return wrapper
+
+
 class SentenceTransformerEmbedder(Embedder):
     name = "sentence-transformers"
 
@@ -57,6 +72,36 @@ class SentenceTransformerEmbedder(Embedder):
 
     def _embed(self, texts):
         return self.st.encode(texts, batch_size=get_settings().embed_batch_size, show_progress_bar=False)
+
+
+class MedCPTEmbedder(Embedder):
+    """NCBI MedCPT: two encoders trained on PubMed search logs, one for queries and one for documents
+    (the same family as the MedCPT reranker). Model name is ignored; the [CLS] vector is the embedding."""
+    name = "medcpt"
+
+    def __init__(self, model: str = "ncbi/MedCPT"):
+        super().__init__(model)
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        self.torch = torch
+        self.enc = {kind: (AutoTokenizer.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder"), AutoModel.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder").eval())
+                    for kind in ("Query", "Article")}
+
+    def _encode(self, kind: str, texts: list[str], max_len: int) -> np.ndarray:
+        tok, model = self.enc[kind]
+        out = []
+        with self.torch.no_grad():
+            for i in range(0, len(texts), get_settings().embed_batch_size):
+                x = tok(texts[i:i + get_settings().embed_batch_size], truncation=True, padding=True, max_length=max_len, return_tensors="pt")
+                out.append(model(**x).last_hidden_state[:, 0, :].numpy())
+        return np.vstack(out)
+
+    def embed_documents(self, texts):
+        return _normalise(self._encode("Article", texts, 512))
+
+    def embed_query(self, text):
+        return _normalise(self._encode("Query", [text], 64))[0]
 
 
 class OllamaEmbedder(Embedder):
@@ -121,7 +166,9 @@ class HashEmbedder(Embedder):
         return out
 
 
-PROVIDERS = {c.name: c for c in (SentenceTransformerEmbedder, OllamaEmbedder, OpenAIEmbedder, GeminiEmbedder, HashEmbedder)}
+Embedder.embed_query = _cached_query(Embedder.embed_query)
+MedCPTEmbedder.embed_query = _cached_query(MedCPTEmbedder.embed_query)
+PROVIDERS = {c.name: c for c in (SentenceTransformerEmbedder, MedCPTEmbedder, OllamaEmbedder, OpenAIEmbedder, GeminiEmbedder, HashEmbedder)}
 _cache: dict[tuple, Embedder] = {}
 
 

@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -100,6 +101,49 @@ def _judge(judge, it, ans) -> dict:
     return out
 
 
+CITE_RE = re.compile(r"\[S(\d+)(?:\s*[,;]\s*S?(\d+))*\]")
+NUMBER_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\bMRN\d+\b|\b\d+(?:[.,]\d+)?\b")
+STOP = set("about above after again against along among because before being below between could doing during every from further "
+           "having might other should their there these those through under until where which while would patient patients record "
+           "records report reports study studies sources source shows showed noted".split())
+
+
+def _content_words(s: str) -> set[str]:
+    return {w[:6] for w in re.findall(r"[a-z]{5,}", s.lower()) if w not in STOP}
+
+
+def verify_citations(text: str, sources: list[str], facts: str = "") -> dict:
+    """Deterministic check that each cited sentence is supported by the sources it cites.
+
+    A cited sentence is supported when every number, date and MRN in it appears in the cited sources
+    (or the computed facts), and at least 60% of its content words (5+ letters, compared on the first
+    6 letters) appear in them. invalid_citation_rate counts [S#] that point at no source."""
+    sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text) if x.strip()]
+    cited = supported = invalid = n_cites = factual = factual_cited = 0
+    for sent in sents:
+        nums = set(NUMBER_RE.findall(sent)) - {str(i) for i in range(1, len(sources) + 1)}
+        idx = {int(g) for m in CITE_RE.finditer(sent) for g in m.groups() if g}
+        body = CITE_RE.sub("", sent)
+        is_factual = bool(nums) or len(_content_words(body)) >= 4
+        factual += is_factual
+        if not idx:
+            continue
+        cited += 1
+        factual_cited += is_factual
+        n_cites += len(idx)
+        bad = {i for i in idx if not 1 <= i <= len(sources)}
+        invalid += len(bad)
+        ref = " ".join(sources[i - 1] for i in idx - bad) + "\n" + facts
+        ref_low, words = ref.lower(), _content_words(body)
+        nums_ok = all(n.lower() in ref_low or n.replace(",", "") in ref_low for n in NUMBER_RE.findall(body))
+        words_ok = not words or len(words & _content_words(ref)) / len(words) >= 0.6
+        supported += nums_ok and words_ok and not bad
+    return {"cited_sentences": cited,
+            "citation_precision": supported / cited if cited else None,
+            "citation_coverage": factual_cited / factual if factual else None,
+            "invalid_citation_rate": invalid / n_cites if n_cites else None}
+
+
 def score_answer(it: dict, text: str) -> dict:
     low = text.lower()
     row: dict = {}
@@ -123,25 +167,89 @@ def score_answer(it: dict, text: str) -> dict:
     return row
 
 
-def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str], use_judge: bool = False) -> pd.DataFrame:
+def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str], use_judge: bool = False,
+                    resume: Path | None = None, context: str = "chunk") -> pd.DataFrame:
+    """Answer every item with every LLM. With `resume` (a JSONL file), finished answers are kept across
+    runs and skipped, so a run stopped by a daily free-tier quota continues where it stopped."""
     judge = get_judge() if use_judge else None
+    done: dict[tuple, dict] = {}
+    if resume and resume.exists():
+        for line in resume.read_text(encoding="utf-8").splitlines():
+            r = json.loads(line)
+            if not r.get("error") and (not use_judge or r.get("judge_correctness") is not None):
+                done[(r["llm"], r["id"])] = r
     rows = []
     for spec in llm_specs:
-        rag = RAG(retriever, get_llm(spec))
+        rag = RAG(retriever, get_llm(spec), context=context, log=False)
         for it in tqdm(items, desc=f"answers | {spec}"):
+            if (spec, it["id"]) in done:
+                rows.append(done[(spec, it["id"])])
+                continue
             base = {"llm": spec, "type": it["type"], "difficulty": it.get("difficulty", "easy"), "id": it["id"], "question": it["question"],
-                    "expected": it["answer"]}
+                    "expected": it["answer"], "should_abstain": bool(it.get("abstain"))}
             try:
                 ans = rag.ask(it["question"])
             except Exception as e:  # keep going: one provider failing should not lose the whole run
                 rows.append(base | {"error": str(e)[:200]})
                 continue
             row = base | {"answer": ans.text, "retrieval_s": ans.retrieval_s, "generation_s": ans.generation_s,
-                          "cites_sources": float(bool(re.search(r"\[S\d+\]", ans.text)))} | score_answer(it, ans.text)
+                          "cites_sources": float(bool(re.search(r"\[S\d+\]", ans.text))),
+                          "abstained": float(bool(ABSTAIN_RE.search(ans.text)))} | score_answer(it, ans.text) \
+                | verify_citations(ans.text, ans.result.hits["text"].tolist(), ans.facts)
             if judge:
                 row |= _judge(judge, it, ans)
             rows.append(row)
+            if resume:
+                with resume.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row, default=str) + "\n")
     return pd.DataFrame(rows)
+
+
+GATE_TOLERANCE = {"retrieval": 0.02, "answers": 0.10}  # answers use fewer questions, so they are noisier
+
+
+def gate_metrics(ret_df: pd.DataFrame | None, gen_df: pd.DataFrame | None) -> dict[str, float]:
+    m: dict[str, float] = {}
+    if ret_df is not None and len(ret_df):
+        main = ret_df[ret_df["config"] == ret_df["config"].iloc[0]]
+        for diff, d in main.groupby("difficulty"):
+            m |= {f"retrieval.{diff}.mrr": d["mrr"].mean(), f"retrieval.{diff}.recall": d["recall"].mean()}
+    if gen_df is not None and len(gen_df) and "auto_correct" in gen_df:
+        for llm, g in gen_df.groupby("llm"):
+            m[f"answers.{llm}.auto_correct"] = g["auto_correct"].mean()
+    return {k: round(float(v), 4) for k, v in m.items() if pd.notna(v)}
+
+
+def check_gate(current: dict[str, float], baseline: dict[str, float]) -> list[str]:
+    """Metrics that fell below the baseline by more than the tolerance (an empty list means the gate passes)."""
+    return [f"{k}: {current[k]:.3f} < baseline {v:.3f} (tolerance {GATE_TOLERANCE[k.split('.')[0]]})"
+            for k, v in baseline.items() if k in current and current[k] < v - GATE_TOLERANCE[k.split(".")[0]]]
+
+
+def metric_table(ok: pd.DataFrame) -> pd.DataFrame:
+    """Correctness, faithfulness, relevance, abstention, exact numbers and citations as separate columns per LLM."""
+    out = []
+    for llm, g in ok.groupby("llm", sort=False):
+        row = {"llm": llm, "answers": len(g), "correct (exact)": run_ci(g, "auto_correct")}
+        if "judge_correctness" in g and g["judge_correctness"].notna().any():
+            row |= {"correct (judge)": ci((g["judge_correctness"].dropna() >= 4).astype(float)),
+                    "faithfulness 1-5": run_ci(g, "judge_faithfulness"), "relevance 1-5": run_ci(g, "judge_answer_relevance")}
+        if "should_abstain" in g and "abstained" in g:
+            sa = g["should_abstain"].astype(bool)
+            row |= {"abstain when needed": ci(g.loc[sa, "abstained"]), "false abstain": ci(g.loc[~sa, "abstained"])}
+        row |= {"exact numbers": run_ci(g, "number_correct")}
+        for c in ("citation_precision", "citation_coverage", "invalid_citation_rate"):
+            if c in g:
+                row[c.replace("_", " ")] = run_ci(g, c)
+        if "generation_s" in g:
+            t = g["generation_s"].dropna()
+            row |= {"gen. s p50": f"{t.median():.1f}", "gen. s p95": f"{t.quantile(.95):.1f}"}
+        out.append(row)
+    return pd.DataFrame(out)
+
+
+def run_ci(g: pd.DataFrame, col: str) -> str:
+    return ci(g[col]) if col in g else "-"
 
 
 def report(ret_df: pd.DataFrame | None, gen_df: pd.DataFrame | None, out_dir, k: int) -> str:
@@ -171,6 +279,10 @@ def report(ret_df: pd.DataFrame | None, gen_df: pd.DataFrame | None, out_dir, k:
         lines += ["## Answers", "", tab.to_markdown(index=False), "",
                   "- auto_correct: pass/fail from the deterministic check that fits the question (exact number, all key facts, correct 'no', correct 'not found')",
                   "- judge_*: 1-5 scores from the judge model, which is a different model from the one answering", ""]
+        lines += ["### Answer quality, one metric per column", "", metric_table(ok).to_markdown(index=False), "",
+                  "- correct (exact): deterministic check; correct (judge): judge correctness >= 4",
+                  "- abstain when needed: share of unanswerable questions answered 'not found'; false abstain: share of answerable ones",
+                  "- exact numbers: count questions only; citations: cited sentences supported by the cited sources (verify_citations)", ""]
         by_type = ok.pivot_table(index="llm", columns="type", values="auto_correct", aggfunc="mean").round(2).reset_index()
         lines += ["### auto_correct by question type", "", by_type.to_markdown(index=False), ""]
         if "judge_correctness" in ok and ok["judge_correctness"].notna().any():

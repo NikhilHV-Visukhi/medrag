@@ -7,7 +7,10 @@
   5. re-score the fused candidates with a cross-encoder reranker
   6. pin the patient's profile chunk and, for "latest" questions, their most recent studies
 """
-from dataclasses import dataclass, field
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -38,14 +41,20 @@ class Result:
     filters: Filters
     subset: np.ndarray | None   # rows matching the filters (None = whole index)
     notes: list[str]
+    scope: pd.Series | None = None  # rows the user may see in computed facts (None = all); see security/access.py
+    timings: dict[str, float] = field(default_factory=dict)  # seconds per retrieval stage (tracing)
+    denied_patients: list[int] = field(default_factory=list)  # patients named in the question the user may not see
 
 
-def rrf(rankings: dict[str, list[tuple[int, float]]], k: int = 60) -> list[Hit]:
+def rrf(rankings: dict[str, list[tuple[int, float]]], k: int = 60, weights: dict[str, float] | None = None) -> list[Hit]:
+    """Reciprocal Rank Fusion; a ranking's weight multiplies its 1/(k + rank) contribution (default 1).
+    A name like 'dense#2' (one ranking per rewritten query) takes the weight of 'dense'."""
     fused: dict[int, Hit] = {}
     for name, ranking in rankings.items():
+        w = (weights or {}).get(name.split("#")[0], 1.0)
         for rank, (row, _) in enumerate(ranking):
             h = fused.setdefault(row, Hit(row, 0.0))
-            h.score += 1.0 / (k + rank + 1)
+            h.score += w / (k + rank + 1)
             h.sources.append(name)
     return sorted(fused.values(), key=lambda h: -h.score)
 
@@ -66,8 +75,19 @@ class Reranker:
 
 class Retriever:
     def __init__(self, index: Index | None = None, embed_provider: str | None = None, embed_model: str | None = None,
-                 rerank_model: str | None = None, rerank_blend: str | None = None):
+                 rerank_model: str | None = None, rerank_blend: str | None = None, rrf_k: int | None = None,
+                 dense_weight: float | None = None, rerank_pool: int | None = None, candidates: int | None = None,
+                 query_rewrite: str | None = None):
         s = get_settings()
+        self.rrf_k = rrf_k or s.rrf_k
+        self.dense_weight = s.dense_weight if dense_weight is None else dense_weight
+        self.rerank_pool = rerank_pool or s.rerank_pool
+        self.candidates = candidates or s.candidates
+        self.query_rewrite = query_rewrite or s.query_rewrite
+        self._rewriter = None
+        self._cache_size = s.retrieval_cache_size
+        self._cache: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
         self.index = index or Index(s.index_path(embed_provider, embed_model))
         self.meta = self.index.meta
         self.embedder = get_embedder(self.index.manifest["provider"], self.index.manifest["model"])
@@ -108,12 +128,15 @@ class Retriever:
             m &= (self.meta["specialty"] == f.specialty) | (self.meta["doc_type"] == "patient")
         return m
 
-    def filter_rows(self, f: Filters, notes: list[str]) -> np.ndarray | None:
-        """Rows matching the filters; drops the least important filter until something matches."""
+    def filter_rows(self, f: Filters, notes: list[str], allowed: pd.Series | None = None) -> np.ndarray | None:
+        """Rows matching the filters; drops the least important filter until something matches.
+        `allowed` (the user's access) is applied on top and is never relaxed."""
         order = FILTER_ORDER
         use = set(order)
         while use:
             m = self._mask(f, use)
+            if allowed is not None:
+                m &= allowed
             if m.any():
                 if m.all():
                     return None
@@ -122,7 +145,7 @@ class Retriever:
             use.discard(dropped)
             if not self._mask(f, {dropped}).all():  # only report filters the question actually set
                 notes.append(f"No records match every filter; relaxed the '{dropped}' filter.")
-        return None
+        return None if allowed is None else np.flatnonzero(allowed.to_numpy())  # possibly empty: nothing the user may see
 
     # ---------------- search ----------------
     def finding_mask(self, labels: list[str]) -> pd.Series:
@@ -132,33 +155,87 @@ class Retriever:
         return imp.str.contains(pattern, case=False, regex=True)
 
     def search(self, query: str, k: int | None = None, mode: str = "hybrid+rerank", candidates: int | None = None,
-               use_filters: bool = True, expand: bool = True) -> Result:
+               use_filters: bool = True, expand: bool = True, user=None) -> Result:
+        """`user` (security.access.User) restricts the search to the records that user may see; None = no restriction."""
+        key = (query, k, mode, candidates, use_filters, expand, user)
+        with self._lock:
+            r = self._cache.get(key)
+            if r is not None:  # identical question from the same access scope: reuse, as a copy
+                self._cache.move_to_end(key)
+                return replace(r, hits=r.hits.copy(), notes=list(r.notes), timings={"total": 0.0, "cache_hit": 1.0})
+        r = self._search(query, k, mode, candidates, use_filters, expand, user)
+        if self._cache_size:
+            with self._lock:
+                self._cache[key] = replace(r, hits=r.hits.copy(), notes=list(r.notes))
+                if len(self._cache) > self._cache_size:
+                    self._cache.popitem(last=False)
+        return r
+
+    def _search(self, query, k, mode, candidates, use_filters, expand, user) -> Result:
         s = get_settings()
         k = k or s.top_k
-        n_cand = candidates or s.candidates
+        n_cand = candidates or self.candidates
         notes: list[str] = []
+        t = {"start": time.perf_counter()}
         f = self.parser.parse(query)
-        rows = self.filter_rows(f, notes) if use_filters else None
+        allowed = user.allowed_mask(self.meta) if user is not None else None
+        denied: list[int] = []
+        if allowed is not None and f.patient_ids:
+            # Patient-level rule: a named patient the user may not see is treated exactly like an unknown
+            # one, so the answer does not reveal that the patient exists.
+            ok = [p for p in f.patient_ids if p in user.patients]
+            denied = [p for p in f.patient_ids if p not in user.patients]
+            if not ok:
+                f.unresolved_patient = ", ".join(f.patient_names) or "the requested patient"
+            f.patient_ids = ok
+            f.patient_names = [self.parser.name_of[p] for p in ok]
+        if use_filters:
+            rows = self.filter_rows(f, notes, allowed)
+        else:
+            rows = None if allowed is None else np.flatnonzero(allowed.to_numpy())
+        t["filter"] = time.perf_counter()
         q = query
         if expand:
             q, exp_notes = expand_query(query)
             notes += exp_notes
 
+        # Optional LLM query transformation: extra search queries (rewrite / multi) or a hypothetical
+        # report to embed instead of the question (HyDE). Filters always come from the original question.
+        extra_queries, hyde_doc = [], None
+        if self.query_rewrite != "none":
+            from medrag.retrieval.rewrite import transform
+
+            if self._rewriter is None:
+                from medrag.providers.llms import get_llm
+
+                self._rewriter = get_llm(s.rewrite_llm or None)
+            extra_queries, hyde_doc = transform(self._rewriter, self.query_rewrite, query)
+        t["rewrite"] = time.perf_counter()
+
         rankings = {}
         if mode in ("dense", "hybrid", "hybrid+rerank"):
-            rankings["dense"] = self.index.dense_search(self.embedder.embed_query(q), n_cand, rows)
+            qvec = self.embedder.embed_documents([hyde_doc])[0] if hyde_doc else self.embedder.embed_query(q)
+            rankings["dense"] = self.index.dense_search(qvec, n_cand, rows)
+            for i, eq in enumerate(extra_queries, 2):
+                rankings[f"dense#{i}"] = self.index.dense_search(self.embedder.embed_query(eq), n_cand, rows)
         if mode in ("bm25", "hybrid", "hybrid+rerank"):
             rankings["bm25"] = self.index.sparse_search(q, n_cand, rows)
-        hits = rrf(rankings) if len(rankings) > 1 else [Hit(r, sc, list(rankings)) for r, sc in next(iter(rankings.values()))]
+            for i, eq in enumerate(extra_queries, 2):
+                rankings[f"bm25#{i}"] = self.index.sparse_search(eq, n_cand, rows)
+        t["search"] = time.perf_counter()
+        if len(rankings) > 1:
+            hits = rrf(rankings, self.rrf_k, {"dense": self.dense_weight})
+        else:
+            hits = [Hit(r, sc, list(rankings)) for r, sc in next(iter(rankings.values()))]
 
         if mode == "hybrid+rerank" and self.reranker and hits:
-            pool = hits[: max(s.rerank_pool, k)]
+            pool = hits[: max(self.rerank_pool, k)]
             scores = self.reranker.score(q, self.meta["text"].iloc[[h.row for h in pool]].tolist())
             if self.rerank_blend == "fuse":
                 # Merge the reranker's order with the hybrid order, so a reranker trained on another domain
                 # cannot throw away what the first-stage search got right.
                 by_rerank = [(pool[i].row, float(scores[i])) for i in np.argsort(-scores)]
-                fused = rrf({"hybrid": [(h.row, h.score) for h in pool], "rerank": by_rerank})
+                fused = rrf({"hybrid": [(h.row, h.score) for h in pool], "rerank": by_rerank}, self.rrf_k)
                 src = {h.row: h.sources for h in pool}
                 hits = [Hit(h.row, h.score, src[h.row]) for h in fused]
             else:
@@ -167,6 +244,7 @@ class Retriever:
                 hits = sorted(pool, key=lambda h: -h.score)
 
         hits = hits[:k]
+        t["rerank"] = time.perf_counter()
 
         # Pin what a clinician would always want in front of them.
         pinned: list[Hit] = []
@@ -183,4 +261,9 @@ class Retriever:
         df = self.meta.iloc[[h.row for h in hits]].copy()
         df["score"] = [h.score for h in hits]
         df["via"] = ["+".join(dict.fromkeys(h.sources)) for h in hits]
-        return Result(hits=df, filters=f, subset=rows, notes=notes)
+        t["end"] = time.perf_counter()
+        stages = list(t)
+        timings = {b: round(t[b] - t[a], 4) for a, b in zip(stages, stages[1:])} | {"total": round(t["end"] - t["start"], 4)}
+        timings["pin"] = timings.pop("end")
+        scope = None if user is None or user.role in ("admin", "researcher") else allowed  # researchers: aggregates over everyone
+        return Result(hits=df, filters=f, subset=rows, notes=notes, scope=scope, timings=timings, denied_patients=denied)

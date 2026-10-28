@@ -1,39 +1,8 @@
-"""End-to-end check on a small dataset: offline (parquet), hash embeddings, no reranker, no LLM."""
+"""End-to-end check on a small dataset: offline (parquet), hash embeddings, no reranker, no LLM (fixtures in conftest.py)."""
 import pandas as pd
 import pytest
 
 from medrag.config import get_settings
-
-
-@pytest.fixture(scope="module")
-def env(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("medrag")
-    mp = pytest.MonkeyPatch()
-    for k, v in {"DATA_BACKEND": "parquet", "DATA_DIR": str(tmp / "data"), "INDEX_DIR": str(tmp / "idx"),
-                 "REPORTS_DIR": str(tmp / "reports"), "EMBED_PROVIDER": "hash", "EMBED_MODEL": "bow", "RERANK_MODEL": "none"}.items():
-        mp.setenv(k, v)
-    get_settings.cache_clear()
-    yield get_settings()
-    mp.undo()
-    get_settings.cache_clear()
-
-
-@pytest.fixture(scope="module")
-def built(env):
-    from medrag.data import store
-    from medrag.data.clean import clean
-    from medrag.data.generate import generate
-    from medrag.index.store import build
-    from medrag.ingest.documents import build_chunks
-    from medrag.providers.embeddings import get_embedder
-
-    raw = generate(n_patients=400, mean_studies=4, dirty_rate=0.05, seed=3)
-    store.write_all("raw", raw)
-    cleaned, log = clean(store.read_all("raw"))
-    store.write_all("clean", cleaned)
-    chunks = build_chunks(store.read_all("clean"))
-    manifest = build(chunks, get_embedder(), env.index_path())
-    return raw, cleaned, log, chunks, manifest
 
 
 def test_raw_data_is_dirty_and_clean_data_passes(built):

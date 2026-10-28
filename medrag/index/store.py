@@ -44,16 +44,17 @@ def _remove_old_builds(path: Path, version: str) -> None:
                 pass
 
 
-def build(chunks: pd.DataFrame, embedder: Embedder, path: Path, batch: int = 256) -> dict:
+def build(chunks: pd.DataFrame, embedder: Embedder, path: Path, batch: int = 256, reuse: dict[str, np.ndarray] | None = None) -> dict:
+    """`reuse` maps chunk_id -> vector from another index of the same embedder (benchmarks build subsets of the main index)."""
     path.mkdir(parents=True, exist_ok=True)
     started = time.time()
 
-    old: dict[str, np.ndarray] = {}
+    old: dict[str, np.ndarray] = dict(reuse or {})
     if (path / "manifest.json").exists():
         prev = _files(path, json.loads((path / "manifest.json").read_text()).get("version"))
         if prev["chunks"].exists() and prev["vectors"].exists():
             old_ids = pd.read_parquet(prev["chunks"], columns=["chunk_id"])["chunk_id"]
-            old = dict(zip(old_ids, np.load(prev["vectors"])))
+            old |= dict(zip(old_ids, np.load(prev["vectors"])))
 
     chunks = chunks.reset_index(drop=True)
     todo = [i for i, cid in enumerate(chunks["chunk_id"]) if cid not in old]

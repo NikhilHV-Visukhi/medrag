@@ -28,7 +28,8 @@ def _impression(text: str) -> str:
     return ""
 
 
-def build_chunks(t: dict[str, pd.DataFrame], max_words: int = 220) -> pd.DataFrame:
+def build_chunks(t: dict[str, pd.DataFrame], max_words: int = 220, strategy: str = "section", overlap_words: int = 40) -> pd.DataFrame:
+    """strategy / overlap_words apply to report and document bodies (chunking.chunk_document); profiles stay section-aware."""
     p = t["patients"].set_index("patient_id")
     s = t["studies"].merge(t["reports"][["study_id", "report_text", "status", "radiologist"]], on="study_id", how="left")
     ai = t["ai_analysis"].sort_values("analysis_id").drop_duplicates("study_id", keep="last")
@@ -56,7 +57,7 @@ def build_chunks(t: dict[str, pd.DataFrame], max_words: int = 220) -> pd.DataFra
             f"Study: {modality} {r.body_part} | Date: {date} | Accession: {r.accession} | Priority: {r.priority} | Report status: {r.status}\n"
             f"Indication: {r.indication}"
         )
-        for i, text in enumerate(chunk_document(header, str(r.report_text) + ai_line, max_words)):
+        for i, text in enumerate(chunk_document(header, str(r.report_text) + ai_line, max_words, strategy, overlap_words)):
             rows.append({
                 "chunk_id": _hash(text), "doc_id": f"study:{r.study_id}", "doc_type": "study", "part": i,
                 "patient_id": int(r.patient_id), "study_id": int(r.study_id), "mrn": r.mrn, "patient_name": r.full_name,
@@ -98,7 +99,7 @@ def build_chunks(t: dict[str, pd.DataFrame], max_words: int = 220) -> pd.DataFra
             })
 
     if docs is not None:
-        rows += document_chunks(docs, p, max_words)
+        rows += document_chunks(docs, p, max_words, strategy, overlap_words)
 
     df = pd.DataFrame(rows)
     for col in ("source", "title", "specialty"):
@@ -116,7 +117,7 @@ def _summary_line(text: str) -> str:
     return m.group(1).strip()[:300] if m else ""
 
 
-def document_chunks(docs: pd.DataFrame, patients: pd.DataFrame, max_words: int = 220) -> list[dict]:
+def document_chunks(docs: pd.DataFrame, patients: pd.DataFrame, max_words: int = 220, strategy: str = "section", overlap_words: int = 40) -> list[dict]:
     rows = []
     for d in docs.itertuples(index=False):
         if d.patient_id not in patients.index:
@@ -129,7 +130,7 @@ def document_chunks(docs: pd.DataFrame, patients: pd.DataFrame, max_words: int =
             + (f"\nSummary: {d.description}" if d.source == "mtsamples" and isinstance(d.description, str) and d.description else "")
         )
         is_cxr = d.source == "openi"
-        for i, text in enumerate(chunk_document(header, d.text, max_words)):
+        for i, text in enumerate(chunk_document(header, d.text, max_words, strategy, overlap_words)):
             rows.append({
                 "chunk_id": _hash(text), "doc_id": f"doc:{d.document_id}", "doc_type": "document", "part": i,
                 "patient_id": int(d.patient_id), "study_id": None, "mrn": pt.mrn, "patient_name": pt.full_name, "gender": pt.gender,

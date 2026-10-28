@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     candidates: int = 60
     rerank_pool: int = 30  # fused candidates re-scored by the cross-encoder
     rerank_blend: str = "fuse"  # fuse = RRF of hybrid and reranker order; replace = reranker order only
+    rrf_k: int = 60  # Reciprocal Rank Fusion constant: lower = top ranks count more
+    dense_weight: float = 1.0  # weight of the dense ranking against BM25 (1.0) in the fusion
+    query_rewrite: str = "none"  # none | rewrite | multi | hyde (LLM-based query transformation, see retrieval/rewrite.py)
+    rewrite_llm: str = ""  # provider:model for query_rewrite; default: the answering LLM
+    retrieval_cache_size: int = 256  # identical questions from the same access scope reuse the result; 0 = off
+
+    # production controls (medrag/security)
+    users_file: str = ""  # JSON of users with password hashes; empty = single-user local mode (admin)
+    audit_log: str = ""  # JSONL audit trail; default reports/audit.jsonl
+    metrics_log: str = ""  # JSONL request metrics; default reports/metrics.jsonl
+    phi_cloud: str = "pseudonymize"  # pseudonymize | block | allow: identifiers in prompts sent to cloud LLMs
+    llm_price_in: float = 0.0  # USD per 1M input tokens for the answering LLM, for cost monitoring (0 = local / free tier)
+    llm_price_out: float = 0.0  # USD per 1M output tokens
 
     data_dir: Path = ROOT / "data"
     index_dir: Path = ROOT / "indexes"

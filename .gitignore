@@ -18,3 +18,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/documents/*.csv
+
+# Users and password hashes (USERS_FILE)
+users*.json

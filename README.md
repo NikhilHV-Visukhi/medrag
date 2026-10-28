@@ -113,6 +113,10 @@ What this shows:
 - Dense search alone is weak on keyword-style document questions (0.27 on `doc_semantic`). BM25 is weak on paraphrases. Hybrid covers both.
 - Differences of a few hundredths are inside the confidence intervals. Treat the top three rerank configurations as equivalent.
 
+**Documents after adding MTSamples** (80 questions, default configuration; `reports/eval_20261028_0753`): MRR 0.809, Hit@8 0.875.
+Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Finding a document by content alone is harder:
+0.70 for transcriptions and 0.56 for chest X-ray reports, many of which use near-identical wording ("no acute cardiopulmonary disease").
+
 **Answers** from local `qwen2.5:3b`, judged by `gemini-3-flash-preview` (16 questions, one per type; `reports/eval_20261028_0006`):
 
 | | Easy | Hard | Documents |

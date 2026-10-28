@@ -153,14 +153,14 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 
 | Model | Easy | Hard | Documents | Says "not found" when right | Seconds per answer |
 |---|---:|---:|---:|---:|---:|
-| **qwen3:1.7b** | 88% | 83% | 75% | 33-63% | 44 |
+| **qwen3:1.7b** | 88% | 83% | 75% | 25-63% | 44 |
 | qwen3:4b | 88% | 83% | 75% | 75-88% | 450 |
 | llama3.2:3b | 88% | 83% | 50% | 50-88% | 57 |
-| phi4-mini (3.8B) | 88% | 50% | 75% | 100% | 56 |
+| phi4-mini (3.8B) | 88% | 50% | 75% | 50-100% | 56 |
 | qwen2.5:3b | 63% | 67% | 50% | 75-100% | 55 |
 
 - qwen3:1.7b is the best speed/accuracy trade-off; qwen3:4b scores the same, is the most careful about saying "not found", and is ten times slower.
-- phi4-mini never invents an answer it does not have, but misses hard cohort and trend questions.
+- phi4-mini says "not found" correctly on every easy and documents question, but misses hard cohort and trend questions.
 - Every model fails cohort counts, finding counts and transcription content search: those need retrieval or computed-fact work, not a different model.
 - The 2.5:3b run here (63/67/50%) differs from the judged run above (63/83/50%) on one hard question: with one question per type, a single answer moves a row by 17 points.
 

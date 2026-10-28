@@ -232,8 +232,25 @@ def build_documents(meta: pd.DataFrame, per_type: int = 20, seed: int = 11) -> l
     imp_counts = cxr["impression"].str.lower().value_counts()
     distinct = abnormal[abnormal["impression"].str.lower().map(imp_counts) == 1]
     distinct = distinct[distinct["impression"].str.split().str.len().between(6, 30)]
-    for x in sample(distinct, per_type).itertuples():
-        kw = keywords(x.impression, 5)
+    # The keywords must single out one report: a keyword set that also fits other reports (e.g. 116 reports
+    # mention "stable silhouette pneumothorax focal") measures luck, not retrieval. Use 5 keywords, or up to
+    # 9 if needed; skip impressions that stay ambiguous. "[redacted]" (de-identified text) is never a keyword.
+    every_cxr = meta[(meta["doc_type"] == "document") & (meta["source"] == "openi")]
+    all_imp = every_cxr.groupby("doc_id")["text"].apply(lambda t: " ".join(t).split("\n", 2)[-1].lower())  # report text, header dropped
+    added = 0
+    for x in sample(distinct, 3 * per_type).itertuples():
+        if added == per_type:
+            break
+        words = [w for w in keywords(x.impression, 12) if w != "redacted"]
+        for n in (5, 7, 9):
+            kw = words[:n]
+            if len(kw) < min(n, 5) or all_imp.apply(lambda t: all(re.search(r"\b" + re.escape(w), t) for w in kw)).sum() == 1:
+                break
+        else:
+            continue
+        if len(kw) < 5:
+            continue
+        added += 1
         add("doc_semantic", f"Which patient has an uploaded chest X-ray report describing {' '.join(kw)}?",
             [x.doc_id], [x.patient_name.split()[-1].lower()], f"{x.patient_name}: {x.impression}")
     mts = docs[docs["source"] == "mtsamples"]

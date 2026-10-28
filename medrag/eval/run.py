@@ -176,7 +176,7 @@ def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str
     if resume and resume.exists():
         for line in resume.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
-            if not r.get("error") and (not use_judge or r.get("judge_correctness") is not None):
+            if not r.get("error") and (not use_judge or (r.get("judge_correctness") is not None and r.get("judge") == judge.label)):
                 done[(r["llm"], r["id"])] = r
     rows = []
     for spec in llm_specs:
@@ -197,7 +197,7 @@ def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str
                           "abstained": float(bool(ABSTAIN_RE.search(ans.text)))} | score_answer(it, ans.text) \
                 | verify_citations(ans.text, ans.result.hits["text"].tolist(), ans.facts)
             if judge:
-                row |= _judge(judge, it, ans)
+                row |= _judge(judge, it, ans) | {"judge": judge.label}
             rows.append(row)
             if resume:
                 with resume.open("a", encoding="utf-8") as fh:

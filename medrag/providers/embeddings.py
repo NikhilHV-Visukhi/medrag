@@ -85,7 +85,9 @@ class MedCPTEmbedder(Embedder):
         from transformers import AutoModel, AutoTokenizer
 
         self.torch = torch
-        self.enc = {kind: (AutoTokenizer.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder"), AutoModel.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder").eval())
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.enc = {kind: (AutoTokenizer.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder"),
+                           AutoModel.from_pretrained(f"ncbi/MedCPT-{kind}-Encoder").to(self.device).eval())
                     for kind in ("Query", "Article")}
 
     def _encode(self, kind: str, texts: list[str], max_len: int) -> np.ndarray:
@@ -93,8 +95,8 @@ class MedCPTEmbedder(Embedder):
         out = []
         with self.torch.no_grad():
             for i in range(0, len(texts), get_settings().embed_batch_size):
-                x = tok(texts[i:i + get_settings().embed_batch_size], truncation=True, padding=True, max_length=max_len, return_tensors="pt")
-                out.append(model(**x).last_hidden_state[:, 0, :].numpy())
+                x = tok(texts[i:i + get_settings().embed_batch_size], truncation=True, padding=True, max_length=max_len, return_tensors="pt").to(self.device)
+                out.append(model(**x).last_hidden_state[:, 0, :].cpu().numpy())
         return np.vstack(out)
 
     def embed_documents(self, texts):

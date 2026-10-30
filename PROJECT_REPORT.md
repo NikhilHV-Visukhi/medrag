@@ -1138,7 +1138,7 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `bench_tune_20261029_2344` | 16 retrieval variants on the full index | `dense_weight=0.5` the best variant (20.10) |
 | `dense_weight_check.csv` (2026-10-30) | `dense_weight` 1.0 vs 0.5 on 240 fresh document questions | 0.5 confirmed (+0.016 [0.01-0.03]) and made the default |
 | `ctx_chunk.jsonl`, `ctx_parent.jsonl` (2026-10-30) | chunk vs parent context, 60 document answers, Gemini 3.5 Flash-Lite | parent 93% vs chunk 83% correct (20.9) |
-| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) complete for 4 models, 2 Gemini models partial (20.11) | 
+| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) 312 of 324 judged; Gemini 3 Flash preview partial (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1445,7 +1445,7 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 - The same default retrieval, prompt and computed facts for every model. Local models ran on the RTX 4050 GPU through Ollama; Gemini models through Google AI Studio's free tier.
 - Scored twice: with the deterministic checks of section 19.2, and by an LLM judge (1-5 for correctness, faithfulness, answer relevance and context relevance). Answers and scores are kept in `reports/gen_large*.jsonl`, so a stopped run resumes where it stopped. `scripts/summarise_d.py` builds the tables below.
 - Answers use chunk context (`--context chunk`), the setting the run started with, so every answer of a model sees the same kind of context. The default is now parent context (20.9).
-- **Judge:** NVIDIA's `nemotron-3.5-super-vl-120b-a12b` (API catalog, free credits; provider `nvidia`), the same judge for every answer. The Gemini judge (`gemini-3.6-flash`) was abandoned: its free tier stopped after about 10 requests a day, so only 51 of 324 answers had been judged after two days. Answers already written were judged again without being regenerated.
+- **Judge:** NVIDIA's `nemotron-3.5-super-vl-120b-a12b` (API catalog, free credits; provider `nvidia`), the same judge for every answer. The Gemini judge (`gemini-3.6-flash`) was abandoned: its free tier stopped after about 10 requests a day, so only 51 of 324 answers had been judged after two days. Answers already written were judged again without being regenerated; the missing Gemini answers were generated later the same evening, when the Gemini answer quota allowed.
 - **Answer set:** while the Gemini judge was failing, the resume runs answered some questions again, and the tables use the latest answer for each question. Deterministic scores therefore differ slightly from the first version of this section (qwen3:1.7b 80% → 87%, Gemini 3.5 Flash-Lite 85% → 91%): the same models give somewhat different answers from run to run, which is itself a reminder of how small this sample is.
 
 **Deterministic checks**
@@ -1456,10 +1456,10 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | **Gemini 3.5 Flash-Lite** | 54 | 100% | **83%** | 83% | **91%** | 0.94 | 3 of 3 | 8% | 74% | 0.93 | 0.84 | 3.8 / 9.0 |
 | qwen3:1.7b (GPU) | 54 | 92% | **83%** | 83% | **87%** | 0.93 | 3 of 3 | **29%** | 48% | 0.65 | 0.45 | 3.8 / 7.0 |
 | qwen2.5:3b (GPU, default) | 54 | 96% | **83%** | **33%** | **78%** | 0.79 | 3 of 3 | 10% | 31% | 0.88 | 0.10 | 3.9 / 9.2 |
-| Gemini 3.5 Flash (partial) | 39 | 100% | 80% | - | 92% * | 0.99 | 3 of 3 | 8% | 72% | 0.99 | 0.86 | 4.5 / 22.9 |
-| Gemini 3 Flash preview (partial) | 24 | 100% | - | - | 100% * | 1.00 | 3 of 3 | 0% | 88% | 0.89 | 0.73 | 3.0 / 45.0 |
+| **Gemini 3.5 Flash** | 53 | 100% | **83%** | **100%** (11) | **94%** | 0.99 | 3 of 3 | 6% | 77% | **0.98** | 0.86 | 4.8 / 30.4 |
+| Gemini 3 Flash preview (partial) | 44 | 100% | **89%** | 2 of 2 | 95% * | 1.00 | 3 of 3 | 5% | **93%** | 0.92 | 0.70 | 3.4 / 45.0 |
 
-\* Gemini's daily answer quota for these two models ran out before the hard or document questions, so their totals are not comparable with the others. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
+\* Gemini 3 Flash preview's daily answer quota ran out after 2 of the 12 document questions (Gemini 3.5 Flash after 11), so its total leans on easy and hard questions and is not fully comparable with the others. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
 
 **LLM judge** (Nemotron 3.5 Super; "correct" = correctness 4 or 5; "agrees" = the judge's correct/incorrect matches the deterministic check)
 
@@ -1469,13 +1469,13 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | **Gemini 3.5 Flash-Lite** | 54 | **93%** | 100% | 83% | 92% | 4.70 | 4.87 | 4.72 | 4.70 | 98% |
 | qwen3:1.7b (GPU) | 54 | 78% | 100% | 50% | 75% | 4.19 | 4.52 | 4.22 | 4.72 | 80% |
 | qwen2.5:3b (GPU, default) | 54 | 67% | 83% | 56% | 50% | 3.67 | 4.43 | 3.96 | 4.72 | 81% |
-| Gemini 3.5 Flash (partial) | 37 | 92% * | 100% | 80% | - | 4.73 | 4.81 | 4.73 | 4.62 | 100% |
-| Gemini 3 Flash preview (partial) | 23 | 100% * | 100% | - | - | 5.00 | 5.00 | 4.87 | 4.48 | 100% |
+| **Gemini 3.5 Flash** | 52 | **94%** | 100% | 83% | 100% | **4.81** | 4.87 | **4.81** | 4.73 | 100% |
+| Gemini 3 Flash preview (partial) | 44 | 95% * | 100% | 89% | 2 of 2 | 4.82 | 4.91 | 4.77 | 4.68 | 100% |
 
-Three answers are missing a judge score because the judge's reply was not valid JSON. Context relevance is about the same for every model (4.5-4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
+312 of 324 planned answers are judged; 10 Gemini 3 Flash preview answers and 1 Gemini 3.5 Flash answer were never generated (daily quota), and a few answers are missing a judge score a judge score because the judge's reply was not valid JSON. Context relevance is about the same for every model (4.5-4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
 
 Findings:
-- **The two Flash-Lite models are the most accurate** (91% on the checks, 93% by the judge) and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
+- **The Gemini models are close together** at 93-95% by the judge. Gemini 3.5 Flash is the most accurate complete run (94%, all 11 document answers correct, highest correctness score 4.81); the cheaper Flash-Lite models are within one answer of it (93%) and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
 - **The judge is stricter than the checks on the local models:** qwen3:1.7b drops from 87% to 78% and qwen2.5:3b from 78% to 67%, while for Gemini both methods agree on 98-100% of answers. Of the 21 disagreements on local-model answers, 16 are answers the checks pass and the judge fails, and they show what the keyword checks miss: a trend read backwards (the report says "interval improvement", the answer says "unchanged" or "worse"), a negative question answered with "not found" instead of "no study reports it", study counts swapped between two patients with the same name, and cohort lists padded with patients whose reports do not match. The other 5 are correct answers worded differently from the expected keywords. Faithfulness (4.4-4.5 for the local models against 4.8-4.9 for Gemini) points the same way.
 - **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 1.3-4.5 s for Gemini. On the laptop CPU (20.7) the same models needed 43-57 s.
 - **qwen2.5:3b** is strong on hard questions by the checks (83%) but fails document content questions (33% by the checks, 50% by the judge) and rarely cites (coverage 0.10).

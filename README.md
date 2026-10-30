@@ -187,6 +187,7 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 
 | Model | Easy | Hard | Documents | All (checks) | **Correct (judge)** | Faithfulness (1-5) | False "not found" | Median seconds |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Gemini 3.5 Flash (53 answers) | 100% | 83% | 100% | **94%** | **94%** | 4.87 | 6% | 4.8 |
 | Gemini 3.1 Flash-Lite | 100% | 78% | 92% | **91%** | **93%** | 4.91 | 12% | 1.3 |
 | Gemini 3.5 Flash-Lite | 100% | 83% | 83% | **91%** | **93%** | 4.87 | 8% | 3.8 |
 | qwen3:1.7b (laptop GPU) | 92% | 83% | 83% | **87%** | 78% | 4.52 | 29% | 3.8 |
@@ -194,7 +195,7 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 
 **Answer context:** giving the LLM each retrieved chunk's whole record (`eval --context parent`) instead of the chunk alone raises document answers from 83% to 93% correct (60 questions, Gemini 3.5 Flash-Lite; +0.10 [0.03-0.18] paired), mostly on long transcription notes, with citations just as precise. **Parent context is now the default** (`ANSWER_CONTEXT=chunk` restores the old behaviour).
 
-On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". An LLM judge (NVIDIA `nemotron-3.5-super-vl-120b-a12b`, free API credits; the Gemini free tier allowed only about 10 judge calls a day) rates the answers correct for 93% of Gemini 3.1 / 3.5 Flash-Lite answers, 78% of qwen3:1.7b and 67% of qwen2.5:3b: stricter than the keyword checks for the local models, which read some trends backwards, answer negative questions with "not found" and pad patient lists.
+On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". An LLM judge (NVIDIA `nemotron-3.5-super-vl-120b-a12b`, free API credits; the Gemini free tier allowed only about 10 judge calls a day) rates the answers correct for 93-94% of Gemini 3.5 Flash and 3.1 / 3.5 Flash-Lite answers, 78% of qwen3:1.7b and 67% of qwen2.5:3b: stricter than the keyword checks for the local models, which read some trends backwards, answer negative questions with "not found" and pad patient lists.
 
 **Production controls** (`PROJECT_REPORT.md` section 25): sign-in with four roles (admin, clinician, researcher, auditor), patient-level access enforced in retrieval before any record reaches the LLM, an audit log, pseudonymised identifiers for cloud LLMs, prompt-injection guards, per-request latency / token / cost metrics (`python -m medrag metrics`), caching, a load test (`python -m medrag loadtest`) and a quality gate (`eval --gate`). Load test on the laptop CPU, retrieval only: 0 errors in 160 requests, p50 3.2 s and p95 14.8 s for one user; four users at once share the CPU (p95 29 s), so more users need a GPU for the reranker. Not security-reviewed, and not validated on real patient data: it is not ready for clinical use.
 

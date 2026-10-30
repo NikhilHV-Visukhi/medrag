@@ -24,8 +24,8 @@ class Settings(BaseSettings):
 
     llm_provider: str = "ollama"
     llm_model: str = "qwen2.5:3b"
-    judge_provider: str = "anthropic"
-    judge_model: str = "claude-opus-5-5"
+    judge_provider: str = "nvidia"
+    judge_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
     ollama_url: str = "http://localhost:11434"
     anthropic_api_key: str = ""

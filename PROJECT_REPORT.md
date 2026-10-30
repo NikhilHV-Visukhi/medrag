@@ -155,7 +155,7 @@ Main settings (`.env`, template in `.env.example`):
 | `RERANK_MODEL` | `ncbi/MedCPT-Cross-Encoder` | cross-encoder reranker (`none` to switch off) | 
 | `RERANK_BLEND` | fuse | fuse reranker order with hybrid order (RRF), or `replace` | 
 | `LLM_PROVIDER` / `LLM_MODEL` | ollama / `qwen2.5:3b` | answer model | 
-| `JUDGE_PROVIDER` / `JUDGE_MODEL` | gemini / `gemini-3-flash-preview` (set per run) | judge for evaluation | 
+| `JUDGE_PROVIDER` / `JUDGE_MODEL` | nvidia / `nvidia/nemotron-3.5-super-vl-120b-a12b` (until 2026-10-30: gemini, set per run) | judge for evaluation | 
 | `TOP_K` | 8 | sources given to the LLM | 
 | `CANDIDATES` | 60 | candidates from each of dense and BM25 | 
 | `RERANK_POOL` | 30 | fused candidates re-scored by the reranker | 

@@ -148,7 +148,7 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
 - Lookups by name or MRN, latest study, per-patient counts, "not found", misspelt names, paraphrases and document lookups all score 5/5.
 - The 3B model fails finding counts ("how many patients had X"), content search across many records and names shared by two patients. (It was also marked wrong on the cohort count, but its answer was right; see the test fix below.)
 - The judge agrees with the exact checks on 88% of answers. Both disagreements are on the looser checks ("never had", trends), where the judge is likely right.
-- With 16 questions the confidence intervals are wide. Free-tier quotas (Gemini: per model, per day) are the limit; `JUDGE_MODEL` can be any model with quota left.
+- With 16 questions the confidence intervals are wide. Free-tier quotas (Gemini: per model, per day) are the limit; `JUDGE_MODEL` can be any model with quota left. The default judge is now NVIDIA's `nemotron-3.5-super-vl-120b-a12b` (`JUDGE_PROVIDER=nvidia`, free API credits), which judged the 54-question comparison in minutes.
 
 **Seven models, local and cloud**, on the same 18 questions (one per type: 8 easy, 6 hard, 4 documents), exact checks only (`reports/eval_20261028_1044`, `_1350`, `_1847`). The scores are after fixing a test-set bug: the cohort-count question expected 99, but the true answer was 101, which every model gave (re-scored in `reports/model_comparison_7.csv`).
 

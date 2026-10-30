@@ -31,9 +31,9 @@ README.md explains the pipeline; PROJECT_REPORT.md is the full write-up with all
 
 ## Key settings (.env, non-secret)
 EMBED_PROVIDER=sentence-transformers, EMBED_MODEL=BAAI/bge-small-en-v1.5, RERANK_MODEL=ncbi/MedCPT-Cross-Encoder,
-RERANK_POOL=30, RERANK_BLEND=fuse, LLM_PROVIDER=ollama, LLM_MODEL=qwen2.5:3b, JUDGE_PROVIDER=gemini.
-Judge: run with `JUDGE_MODEL=gemini-3.6-flash` set in the environment (the .env still says 3.8-flash, which
-returned 503s). `gemini-2.5-flash` is closed to new keys. Free-tier daily quotas reset at midnight Pacific
+RERANK_POOL=30, RERANK_BLEND=fuse, LLM_PROVIDER=ollama, LLM_MODEL=qwen2.5:3b,
+JUDGE_PROVIDER=nvidia, JUDGE_MODEL=nvidia/nemotron-3.5-super-vl-120b-a12b (key NVIDIA_API_KEY; the default judge
+since 2026-10-30). Gemini as judge (`gemini-3.6-flash`) allows only ~10 calls a day on the free tier. `gemini-2.5-flash` is closed to new keys. Free-tier daily quotas reset at midnight Pacific
 (12:30 IST); a 429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier` means wait for the reset.
 
 ## Work in progress (started 2026-10-28): improvements A-E

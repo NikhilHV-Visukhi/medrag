@@ -1,8 +1,8 @@
 # D (generation eval): keep making resume passes until every answer is judged.
 # Gemini's free-tier judge quota comes back in bursts, so wait between passes when answers are still unjudged.
 # -Only cloud | local runs one half, so the local (GPU) models can run alongside the cloud ones.
-# -Judge provider:model picks the judge (default the Gemini free tier); answers judged by another judge are redone.
-param([string]$Only = 'both', [string]$Judge = 'gemini:gemini-3.6-flash')
+# -Judge provider:model picks the judge (default NVIDIA Nemotron, free API credits); answers judged by another judge are redone.
+param([string]$Only = 'both', [string]$Judge = 'nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b')
 Set-Location (Join-Path $PSScriptRoot '..')
 $env:PYTHONIOENCODING = 'utf-8'
 $env:JUDGE_PROVIDER, $env:JUDGE_MODEL = $Judge -split ':', 2

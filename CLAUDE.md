@@ -45,7 +45,7 @@ controls. All code for A-E is written, committed and tested.
 D's deterministic checks are done for qwen2.5:3b, qwen3:1.7b and gemini-3.5-flash-lite (54 answers each, 20.11);
 gemini-3.5-flash has 35, the other two Gemini models 3. (Update 2026-10-30 evening: D is judged by NVIDIA
 `nemotron-3.5-super-vl-120b-a12b`, key NVIDIA_API_KEY in .env, `run_d_loop.ps1 -Judge nvidia:<model>`; all 324
-judged, report 20.11. D is complete.)
+judged, report 20.11; two NVIDIA answer models added in `reports/gen_large_nvidia.jsonl`. D is complete.)
 Old note: the Gemini judge was blocked by the free-tier quota (40 of 324
 judged). Also done (2026-10-30, report 20.9, 20.10, 25.1-25.3): chunk vs parent context (parent 93% vs 83%,
 now the default via `answer_context`; `run_d_loop.ps1` keeps `--context chunk` so the D resume files stay consistent), `dense_weight=0.5` confirmed on 240 fresh questions and made the

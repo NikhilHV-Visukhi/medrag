@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 # gen_large_local.jsonl also holds the qwen2.5 answers (copied in from gen_large_local_q25.jsonl before judging).
-files = sys.argv[1:] or ["reports/gen_large.jsonl", "reports/gen_large_local.jsonl"]
+files = sys.argv[1:] or ["reports/gen_large.jsonl", "reports/gen_large_local.jsonl", "reports/gen_large_nvidia.jsonl"]
 rows = []
 for f in files:
     if Path(f).exists():

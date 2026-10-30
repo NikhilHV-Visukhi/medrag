@@ -189,6 +189,8 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Gemini 3 Flash preview | 100% | 89% | 92% | **94%** | **96%** | 4.93 | 4% | 3.7 |
 | Gemini 3.5 Flash | 100% | 83% | 100% | **94%** | **94%** | 4.87 | 6% | 4.7 |
+| NVIDIA Nemotron 3.5 Super (also the judge) | 100% | 83% | 83% | **91%** | 94% | 4.83 | 2% | 0.9 |
+| NVIDIA Nemotron 3.5 Lightning | 88% | 72% | 67% | **78%** | 89% | 4.63 | 0% | 1.2 |
 | Gemini 3.1 Flash-Lite | 100% | 78% | 92% | **91%** | **93%** | 4.91 | 12% | 1.3 |
 | Gemini 3.5 Flash-Lite | 100% | 83% | 83% | **91%** | **93%** | 4.87 | 8% | 3.8 |
 | qwen3:1.7b (laptop GPU) | 92% | 83% | 83% | **87%** | 78% | 4.52 | 29% | 3.8 |

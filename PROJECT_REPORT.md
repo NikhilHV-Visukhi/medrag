@@ -1138,7 +1138,7 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `bench_tune_20261029_2344` | 16 retrieval variants on the full index | `dense_weight=0.5` the best variant (20.10) |
 | `dense_weight_check.csv` (2026-10-30) | `dense_weight` 1.0 vs 0.5 on 240 fresh document questions | 0.5 confirmed (+0.016 [0.01-0.03]) and made the default |
 | `ctx_chunk.jsonl`, `ctx_parent.jsonl` (2026-10-30) | chunk vs parent context, 60 document answers, Gemini 3.5 Flash-Lite | parent 93% vs chunk 83% correct (20.9) |
-| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) all 324 answers judged, 6 models (20.11) | 
+| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU, Gemini and NVIDIA | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super): all 432 answers of 8 models judged (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1458,6 +1458,8 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | qwen2.5:3b (GPU, default) | 54 | 96% | **83%** | **33%** | **78%** | 0.79 | 3 of 3 | 10% | 31% | 0.88 | 0.10 | 3.9 / 9.2 |
 | **Gemini 3.5 Flash** | 54 | 100% | 83% | **100%** | **94%** | 0.99 | 3 of 3 | 6% | 78% | **0.98** | 0.84 | 4.7 / 30.0 |
 | **Gemini 3 Flash preview** | 54 | 100% | **89%** | 92% | **94%** | 0.99 | 3 of 3 | **4%** | **94%** | 0.92 | 0.74 | 3.7 / 30.7 |
+| **NVIDIA Nemotron 3.5 Super** † | 54 | 100% | 83% | 83% | **91%** | 0.95 | 3 of 3 | **2%** | 85% | **0.98** | 0.66 | **0.9** / 13.0 |
+| NVIDIA Nemotron 3.5 Lightning | 54 | 88% | 72% | 67% | 78% | 0.79 | 3 of 3 | **0%** | 81% | 0.97 | 0.20 | 1.2 / 5.6 |
 
 "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
 
@@ -1471,11 +1473,16 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | qwen2.5:3b (GPU, default) | 54 | 67% | 83% | 56% | 50% | 3.67 | 4.43 | 3.96 | 4.72 | 81% |
 | **Gemini 3 Flash preview** | 54 | **96%** | 100% | **89%** | 100% | **4.83** | **4.93** | 4.78 | 4.74 | 98% |
 | **Gemini 3.5 Flash** | 54 | 94% | 100% | 83% | 100% | 4.81 | 4.87 | **4.81** | 4.74 | 100% |
+| **NVIDIA Nemotron 3.5 Super** † | 54 | 94% | 100% | 83% | 100% | 4.74 | 4.83 | 4.80 | 4.74 | 96% |
+| NVIDIA Nemotron 3.5 Lightning | 54 | 89% | 96% | 78% | 92% | 4.48 | 4.63 | 4.65 | 4.74 | 85% |
 
-All 324 answers are judged. When the judge's reply was not valid JSON (it sometimes drops the quote before `reason`), the four scores are read from the reply directly. Context relevance is about the same for every model (4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
+† Nemotron 3.5 Super is also the judge, so it grades its own answers; a model can favour its own wording, so read its judge score with care. Its deterministic score (91%) is the independent measure. The two NVIDIA models answer through NVIDIA's API catalog (free credits, `nvidia:` provider, `--resume reports/gen_large_nvidia.jsonl`).
+
+All 432 answers (8 models × 54) are judged. When the judge's reply was not valid JSON (it sometimes drops the quote before `reason`), the four scores are read from the reply directly. Context relevance is about the same for every model (4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
 
 Findings:
 - **The Gemini models are close together** at 93-96% by the judge, within two answers of each other. Gemini 3 Flash preview scores highest (96%, best on hard questions at 89%, cites sources in 94% of answers) and Gemini 3.5 Flash answered all 12 document questions correctly; the cheaper Flash-Lite models are at 93% and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
+- **NVIDIA's models are the fastest** (median 0.9-1.2 s) and almost never say "not found" wrongly (0-2%). Nemotron 3.5 Super matches the Flash-Lite models on the checks (91%). Nemotron 3.5 Lightning, the smaller model, is weaker (78% on the checks) and cites few sentences (coverage 0.20); the judge rates it higher (89%), the one model where the judge is more lenient than the checks, so part of that gap may be the judge favouring a model of its own family.
 - **The judge is stricter than the checks on the local models:** qwen3:1.7b drops from 87% to 78% and qwen2.5:3b from 78% to 67%, while for Gemini both methods agree on 98-100% of answers. Of the 21 disagreements on local-model answers, 16 are answers the checks pass and the judge fails, and they show what the keyword checks miss: a trend read backwards (the report says "interval improvement", the answer says "unchanged" or "worse"), a negative question answered with "not found" instead of "no study reports it", study counts swapped between two patients with the same name, and cohort lists padded with patients whose reports do not match. The other 5 are correct answers worded differently from the expected keywords. Faithfulness (4.4-4.5 for the local models against 4.8-4.9 for Gemini) points the same way.
 - **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 1.3-4.5 s for Gemini. On the laptop CPU (20.7) the same models needed 43-57 s.
 - **qwen2.5:3b** is strong on hard questions by the checks (83%) but fails document content questions (33% by the checks, 50% by the judge) and rarely cites (coverage 0.10).

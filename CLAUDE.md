@@ -14,7 +14,11 @@ README.md explains the pipeline; PROJECT_REPORT.md is the full write-up with all
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Environment
-- Windows, Python 3.14 venv in `.venv`. Run as `PYTHONIOENCODING=utf-8 .venv/Scripts/python -m medrag ...`.
+- Windows, Python 3.13 venv in `.venv` (made with uv; 3.14 also works). Run as `PYTHONIOENCODING=utf-8 .venv/Scripts/python -m medrag ...`.
+- Current laptop: RTX 4050 6 GB, driver 617.42 (CUDA 13.4), torch 2.15.0+cu132 installed with `uv pip install torch --torch-backend=auto`.
+  GPU runs fail or crawl when it is short of memory: keep `EMBED_BATCH_SIZE=64`, and run one Ollama model at a time
+  (two models plus the reranker overflow 6 GB). Keep the laptop on the charger with sleep off: on battery the GPU is
+  capped at 35 W, and sleep freezes runs.
 - Ollama for local models: `qwen2.5:3b`, `qwen3:1.7b`, `nomic-embed-text`.
 - GPU laptop: install CUDA PyTorch before requirements
   (`pip install torch --index-url https://download.pytorch.org/whl/cu126`), check
@@ -35,8 +39,13 @@ returned 503s). `gemini-2.5-flash` is closed to new keys. Free-tier daily quotas
 ## Work in progress (started 2026-10-28): improvements A-E
 The owner asked for: (A) embedding model benchmark, (B) chunking comparison, (C) retrieval tuning with
 ablations, (D) generation comparison + separate answer metrics + continuous evaluation, (E) production
-controls. All code for A-E is written, committed and tested. What remains is running the experiments,
-then writing the results into PROJECT_REPORT.md and README.md.
+controls. All code for A-E is written, committed and tested.
+
+**Status 2026-10-30:** A, B and C are run and written up (PROJECT_REPORT.md 20.8-20.10, README Benchmarks).
+D's deterministic checks are done for qwen2.5:3b, qwen3:1.7b and gemini-3.5-flash-lite (54 answers each, 20.11);
+gemini-3.5-flash has 35, the other two Gemini models 3. The LLM judge is blocked by the free-tier quota (40 of 324
+judged). Still to do: judged D runs (`scripts/run_d_loop.ps1 -Only cloud|local`, check quota with
+`scripts/probe_quota.py`), chunk vs parent context, the E write-up. The sections below are the original plan.
 
 Done in code: `medrag/eval/bench.py` (A/B/C), `medrag/retrieval/rewrite.py` (query rewrite, multi-query, HyDE),
 `medrag/security/` (users/RBAC, patient-level access before the LLM, audit + metrics JSONL, PHI

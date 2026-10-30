@@ -183,6 +183,18 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 - Removing the reranker costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions; bge-reranker-v2-m3 matches MedCPT but is 2-4 times slower.
 - LLM query rewrite, multi-query and HyDE add about 4 s per question and do not help overall (rewrite +0.008, the other two worse).
 
+**Answers on 54 questions per model** (3 per question type, deterministic checks; `PROJECT_REPORT.md` section 20.11):
+
+| Model | Easy | Hard | Documents | All | False "not found" | Median seconds |
+|---|---:|---:|---:|---:|---:|---:|
+| Gemini 3.5 Flash-Lite | 100% | 67% | 83% | **85%** | 8% | 2.7 |
+| qwen3:1.7b (laptop GPU) | 88% | 72% | 75% | **80%** | 31% | 4.2 |
+| qwen2.5:3b (laptop GPU, default) | 96% | 83% | 33% | **78%** | 10% | 3.9 |
+
+On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". LLM-judge scores are still pending: the Gemini free tier allowed only 40 of 324 judge calls.
+
+Helper scripts are in `scripts/`: `run_chain.sh` (benchmarks A-C), `run_d_loop.ps1` (answer evaluation with the judge, resumable), `summarise_d.py` (table above), `probe_quota.py` (checks Gemini quota without printing the key).
+
 ## Layout
 
 ```

@@ -2,7 +2,7 @@
  
 Everything done in this project, end to end: data collection, quality checks, cleaning, outside documents, chunking, embedding, indexing, retrieval, answering, evaluation (all question types and metrics), every experiment and result, problems hit along the way, fixes, deployment options and known limits. **Part I** (sections 1-28) describes what was done and the results; **Part II** (sections 29-59) is the technical deep dive: for every stage, the method, where it is in the code, how it works with sample code, and why it was chosen; **Part III** (sections 60-72) covers the practical and non-technical side. 
  
-Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 2026-10-28, benchmarks in sections 20.8-20.10 added 2026-10-30. 
+Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 2026-10-28, benchmarks and the larger answer test in sections 20.8-20.11 added 2026-10-30. 
  
 ## Executive summary 
  
@@ -16,6 +16,7 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
 **How well it works.** 
 - **Finding the right record:** it is among the top 8 sources for 100% of simple questions, 99% of hard ones (lay wording, misspelt names) and 88% of document questions. 
 - **Design choices tested:** six embedding models, six chunking strategies and 16 retrieval settings were compared. None clearly beat the current setup, so it was kept (sections 20.8-20.10).
+- **Larger answer test (54 questions per model):** Gemini 3.5 Flash-Lite passes 85%, qwen3:1.7b 80% and qwen2.5:3b 78%. On a laptop GPU the local models answer in about 4 s (median), close to the cloud (section 20.11).
 - **Answers:** the best models, local (qwen3) and cloud (Gemini 3 Flash), pass 89% (16 of 18) of exact answer checks. Gemini 3 Flash answers in about 3 seconds, while local models on the laptop CPU take 45 seconds or more. The two remaining failures are pipeline issues, the same for every model (section 20.7). 
  
 **Speed and cost.** 
@@ -1134,7 +1135,8 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `eval_20261028_2246` | retrieval only, final filter-order fix (body part before documents) | current retrieval table (20.4) |
 | `bench_embed_20261029_0050`, `_2258` | 6 embedding models on a 15,749-chunk subset | keep bge-small (20.8) |
 | `bench_chunk_20261029_2325` | 6 chunking strategies on the same subset | keep section-220 (20.9) |
-| `bench_tune_20261029_2344` | 16 retrieval variants on the full index | default kept; `dense_weight=0.5` is a candidate (20.10) | 
+| `bench_tune_20261029_2344` | 16 retrieval variants on the full index | default kept; `dense_weight=0.5` is a candidate (20.10) |
+| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks complete for 3 models; LLM judge blocked by free-tier quota (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1412,7 +1414,33 @@ Findings:
 - **The reranker earns its place:** removing it costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions (0.905 vs 0.885). bge-reranker-v2-m3 matches MedCPT, but it is a 2.3 GB model and 2-4 times slower per query.
 - **`rrf_k`, `candidates` and `rerank_pool`** each move MRR by 0.006 or less.
 - **LLM query transformations are not worth it:** query rewrite helps semantic document questions (+0.047) but hurts hard semantic ones (-0.028), a net +0.008 for about 4 s and one LLM call per question. Multi-query and HyDE are worse than the default. None were adopted.
-- **The default documents MRR here (0.901) is higher than in 20.4 (0.859)** because the `doc_semantic` questions were fixed: 9 of the 20 old questions matched several near-identical reports, so a "wrong" top hit could be an equally correct report. Questions must now match exactly one report, and `doc_semantic` MRR rose from 0.562 to 0.727. 
+- **The default documents MRR here (0.901) is higher than in 20.4 (0.859)** because the `doc_semantic` questions were fixed: 9 of the 20 old questions matched several near-identical reports, so a "wrong" top hit could be an equally correct report. Questions must now match exactly one report, and `doc_semantic` MRR rose from 0.562 to 0.727.
+
+### 20.11 Generation compared on 54 questions per model (D, 2026-10-30)
+
+**Setup.**
+- 54 questions per model: 3 from each of the 18 question types (24 easy, 18 hard, 12 documents), three times the sample of 20.6-20.7.
+- The same default retrieval, prompt and computed facts for every model. Local models ran on the RTX 4050 GPU through Ollama; Gemini models through Google AI Studio's free tier.
+- Scored with the deterministic checks of section 19.2. Answers and checks are kept in `reports/gen_large*.jsonl`, so a stopped run resumes where it stopped. `scripts/summarise_d.py` builds the table below.
+
+| Model | Answers | Easy | Hard | Documents | **All** | Fact recall | Correct "not found" | False "not found" | Cites sources | Citation precision | Citation coverage | Generation s (median / p95) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Gemini 3.5 Flash-Lite** | 54 | 100% | 67% | 83% | **85%** | 0.90 | 3 of 3 | 8% | 69% | 0.90 | 0.85 | **2.7 / 10.1** |
+| qwen3:1.7b (GPU) | 54 | 88% | 72% | 75% | **80%** | 0.83 | 3 of 3 | **31%** | 43% | 0.70 | 0.35 | 4.2 / 23.9 |
+| qwen2.5:3b (GPU, default) | 54 | 96% | **83%** | **33%** | **78%** | 0.79 | 3 of 3 | 10% | 31% | 0.88 | 0.10 | 3.9 / 9.2 |
+| Gemini 3.5 Flash (partial) | 35 | 100% | 73% | - | 91% * | 0.99 | 3 of 3 | 0% | 71% | 0.99 | 0.86 | 4.6 / 25.6 |
+
+\* Gemini 3.5 Flash's daily answer quota ran out before the document questions, so its total covers easy and hard only and is not comparable with the others. Gemini 3.1 Flash-Lite and Gemini 3 Flash preview have only 3 answers each so far and are left out. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
+
+Findings:
+- **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 2.7 s for Gemini 3.5 Flash-Lite. On the laptop CPU (20.7) the same models needed 43-57 s.
+- **Gemini 3.5 Flash-Lite is the most accurate complete run** (85%), the best on documents (83%) and cites its sources best (coverage 0.85).
+- **qwen2.5:3b** is the strongest on hard questions (83%) but fails document content questions: 0 of 3 on both `doc_semantic` and `doc_transcription_semantic`, so 33% on documents overall. It also cites rarely (coverage 0.10).
+- **qwen3:1.7b** is better on documents (75%) but says "not found" on 31% of questions it could have answered, the same weakness seen in 20.7.
+- **Every model fails most finding counts** (`hard_count_finding`, 0-33%), the pipeline issue described in 20.7 (the finding wording is not in the expansion dictionary).
+- **Small samples:** 3 questions per type and 12 document questions, so one answer moves a type by 33 points and documents by 8. Treat differences as directions.
+
+**Not done yet: the LLM judge.** Every answer also needs one request to the Gemini judge (`gemini-3.6-flash`) for the 1-5 correctness, faithfulness and relevance scores. The free-tier quota ran out repeatedly after a handful of requests, so only 40 of the 324 planned answers are judged (34 for Gemini 3.5 Flash), too few to compare models. The judged runs resume with `scripts/run_d_loop.ps1` once the quota allows or billing is enabled. The chunk vs parent-document context comparison (20.9) is waiting on the same judge. 
  
 --- 
  

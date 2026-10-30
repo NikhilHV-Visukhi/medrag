@@ -12,7 +12,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from medrag.providers.llms import get_judge, get_llm
-from medrag.rag.answer import RAG
+from medrag.rag.answer import RAG, Answer
 from medrag.retrieval.retriever import Retriever
 
 ABSTAIN_RE = re.compile(r"(no patient matching|not (be )?found|do(es)? not contain|no record|not in the records|no information|unable to find)", re.I)
@@ -173,11 +173,16 @@ def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str
     runs and skipped, so a run stopped by a daily free-tier quota continues where it stopped."""
     judge = get_judge() if use_judge else None
     done: dict[tuple, dict] = {}
+    unjudged: dict[tuple, dict] = {}  # answered but not (yet) judged by this judge: judge again, keep the answer
     if resume and resume.exists():
         for line in resume.read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
-            if not r.get("error") and (not use_judge or (r.get("judge_correctness") is not None and r.get("judge") == judge.label)):
+            if r.get("error") or not r.get("answer"):
+                continue
+            if not use_judge or (r.get("judge_correctness") is not None and r.get("judge") == judge.label):
                 done[(r["llm"], r["id"])] = r
+            else:
+                unjudged[(r["llm"], r["id"])] = r
     rows = []
     for spec in llm_specs:
         rag = RAG(retriever, get_llm(spec), context=context, log=False)
@@ -185,7 +190,15 @@ def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str
             if (spec, it["id"]) in done:
                 rows.append(done[(spec, it["id"])])
                 continue
-            base = {"llm": spec, "type": it["type"], "difficulty": it.get("difficulty", "easy"), "id": it["id"], "question": it["question"],
+            if (spec, it["id"]) in unjudged:
+                old = unjudged[(spec, it["id"])]
+                r, facts, *_ = rag.prepare(it["question"])  # same retrieval as when it was answered
+                row = old | _judge(judge, it, Answer(it["question"], old["answer"], r, facts, spec, 0.0, 0.0)) | {"judge": judge.label}
+                rows.append(row)
+                with resume.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row, default=str) + "\n")
+                continue
+            base ={"llm": spec, "type": it["type"], "difficulty": it.get("difficulty", "easy"), "id": it["id"], "question": it["question"],
                     "expected": it["answer"], "should_abstain": bool(it.get("abstain"))}
             try:
                 ans = rag.ask(it["question"])

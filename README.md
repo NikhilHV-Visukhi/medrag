@@ -23,7 +23,7 @@ question ──► parse filters ──► filtered dense + BM25 ──► RRF �
 | **Index** | Dense vectors use FAISS (exact search, switching to HNSW above 150k chunks). Sparse search uses BM25 via `bm25s`, with stemming and stopwords. Metadata is stored in parquet. |
 | **Retrieval** | The question is parsed into filters: patient (MRN, ID, accession, or fuzzy name match), modality, body part, priority, date range, "latest", "how many", "abnormal", a finding, documents and specialty. **Medical query expansion** maps lay terms to report wording ("slipped disc" → disc herniation / "disc extrusion", 32 findings, 104 synonyms) for BM25, embeddings, the reranker and the LLM. Search runs only inside the matching records, so no other patient's chunks leak in. If nothing matches, filters are relaxed one at a time. Dense and BM25 results are fused with Reciprocal Rank Fusion, then reranked with a medical cross-encoder (`ncbi/MedCPT-Cross-Encoder`). The reranker order is fused with the hybrid order (`RERANK_BLEND=fuse`) rather than replacing it, so a reranker cannot undo a good first-stage result. The patient profile and latest studies are always included. |
 | **Answering** | The LLM receives the sources plus **exact computed facts** (counts, breakdowns, the full timeline), so numbers never depend on which chunks happened to be retrieved. Answers cite `[S1]`... An unknown patient returns "not found" without calling the LLM. |
-| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`, `groq`, `openrouter`, `bedrock` (AWS: any Bedrock model through the Converse API). Gemini, Groq and OpenRouter (`:free` models) have free API tiers, which are enough for evaluation and judging. Choose them in `.env` or per command as `provider:model`. |
+| **LLMs** | `ollama` (local), `anthropic`, `openai`, `gemini`, `groq`, `openrouter`, `nvidia` (NVIDIA API catalog, key `NVIDIA_API_KEY`), `bedrock` (AWS: any Bedrock model through the Converse API). Gemini, Groq, NVIDIA and OpenRouter (`:free` models) have free API tiers, which are enough for evaluation and judging. Choose them in `.env` or per command as `provider:model`. |
 | **Evaluation** | Builds a test set from the data itself, so every question has a known answer: lookups by name or MRN, latest study, counts, semantic search, cohort counts and unknown patients. Three sets: **easy** (template lookups), **hard** (lay wording, some deliberately outside the expansion dictionary; questions without dates; follow-up trends; patients who never had the finding; misspelt names; cohort counts by finding) and **documents** (find an uploaded report by patient or by content alone). `golden_review.csv` holds a sample with the gold evidence for a person to check. It scores retrieval (Hit@k, MRR, Recall@k, nDCG) for every configuration, with ablations (no reranker, no expansion, no filters) and bootstrap 95% confidence intervals. Answers are scored on fact recall, exact numbers, correct "not found" answers and citations. Each answer also gets one pass/fail from whichever exact check fits the question. The LLM judge, a different model from the one answering, scores correctness, faithfulness, answer relevance and context relevance from 1 to 5. The report shows how often the judge agrees with the exact checks. |
 
 ## Setup
@@ -183,17 +183,18 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 - Removing the reranker costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions; bge-reranker-v2-m3 matches MedCPT but is 2-4 times slower.
 - LLM query rewrite, multi-query and HyDE add about 4 s per question and do not help overall (rewrite +0.008, the other two worse).
 
-**Answers on 54 questions per model** (3 per question type, deterministic checks; `PROJECT_REPORT.md` section 20.11):
+**Answers on 54 questions per model** (3 per question type, chunk context; deterministic checks and an LLM judge; `PROJECT_REPORT.md` section 20.11):
 
-| Model | Easy | Hard | Documents | All | False "not found" | Median seconds |
-|---|---:|---:|---:|---:|---:|---:|
-| Gemini 3.5 Flash-Lite | 100% | 67% | 83% | **85%** | 8% | 2.7 |
-| qwen3:1.7b (laptop GPU) | 88% | 72% | 75% | **80%** | 31% | 4.2 |
-| qwen2.5:3b (laptop GPU, default) | 96% | 83% | 33% | **78%** | 10% | 3.9 |
+| Model | Easy | Hard | Documents | All (checks) | **Correct (judge)** | Faithfulness (1-5) | False "not found" | Median seconds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Gemini 3.1 Flash-Lite | 100% | 78% | 92% | **91%** | **93%** | 4.91 | 12% | 1.3 |
+| Gemini 3.5 Flash-Lite | 100% | 83% | 83% | **91%** | **93%** | 4.87 | 8% | 3.8 |
+| qwen3:1.7b (laptop GPU) | 92% | 83% | 83% | **87%** | 78% | 4.52 | 29% | 3.8 |
+| qwen2.5:3b (laptop GPU, default) | 96% | 83% | 33% | **78%** | 67% | 4.43 | 10% | 3.9 |
 
 **Answer context:** giving the LLM each retrieved chunk's whole record (`eval --context parent`) instead of the chunk alone raises document answers from 83% to 93% correct (60 questions, Gemini 3.5 Flash-Lite; +0.10 [0.03-0.18] paired), mostly on long transcription notes, with citations just as precise. **Parent context is now the default** (`ANSWER_CONTEXT=chunk` restores the old behaviour).
 
-On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". LLM-judge scores are still pending: the Gemini free tier allowed only 40 of 324 judge calls.
+On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". An LLM judge (NVIDIA `nemotron-3.5-super-vl-120b-a12b`, free API credits; the Gemini free tier allowed only about 10 judge calls a day) rates the answers correct for 93% of Gemini 3.1 / 3.5 Flash-Lite answers, 78% of qwen3:1.7b and 67% of qwen2.5:3b: stricter than the keyword checks for the local models, which read some trends backwards, answer negative questions with "not found" and pad patient lists.
 
 **Production controls** (`PROJECT_REPORT.md` section 25): sign-in with four roles (admin, clinician, researcher, auditor), patient-level access enforced in retrieval before any record reaches the LLM, an audit log, pseudonymised identifiers for cloud LLMs, prompt-injection guards, per-request latency / token / cost metrics (`python -m medrag metrics`), caching, a load test (`python -m medrag loadtest`) and a quality gate (`eval --gate`). Load test on the laptop CPU, retrieval only: 0 errors in 160 requests, p50 3.2 s and p95 14.8 s for one user; four users at once share the CPU (p95 29 s), so more users need a GPU for the reranker. Not security-reviewed, and not validated on real patient data: it is not ready for clinical use.
 

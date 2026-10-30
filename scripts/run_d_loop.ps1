@@ -1,10 +1,11 @@
 # D (generation eval): keep making resume passes until every answer is judged.
 # Gemini's free-tier judge quota comes back in bursts, so wait between passes when answers are still unjudged.
 # -Only cloud | local runs one half, so the local (GPU) models can run alongside the cloud ones.
-param([string]$Only = 'both')
+# -Judge provider:model picks the judge (default the Gemini free tier); answers judged by another judge are redone.
+param([string]$Only = 'both', [string]$Judge = 'gemini:gemini-3.6-flash')
 Set-Location (Join-Path $PSScriptRoot '..')
 $env:PYTHONIOENCODING = 'utf-8'
-$env:JUDGE_MODEL = 'gemini-3.6-flash'
+$env:JUDGE_PROVIDER, $env:JUDGE_MODEL = $Judge -split ':', 2
 $py = '.venv\Scripts\python.exe'
 # The resume files were answered with chunk context; keep it so every answer of a model uses the same context.
 $common = '--skip-retrieval', '--per-type', '20', '--max-answers', '54', '--judge', '--context', 'chunk'
@@ -16,7 +17,7 @@ function Judged($file) {
     $ok = @{}
     foreach ($line in Get-Content $file -Encoding utf8) {
         $r = $line | ConvertFrom-Json
-        if ($null -ne $r.judge_correctness -and $r.judge -eq "gemini:$($env:JUDGE_MODEL)") { $ok["$($r.llm)|$($r.id)"] = 1 }
+        if ($null -ne $r.judge_correctness -and $r.judge -eq $Judge) { $ok["$($r.llm)|$($r.id)"] = 1 }
     }
     return $ok.Count
 }

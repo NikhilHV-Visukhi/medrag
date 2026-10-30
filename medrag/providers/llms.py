@@ -28,7 +28,8 @@ class LLM:
                 return "".join(self.stream(system, user, max_tokens))
             except Exception as e:  # free tiers rate-limit often: wait and retry on 429 / quota / temporary overload only
                 msg = str(e)
-                if attempt == retries or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException", "503", "UNAVAILABLE")):
+                daily = "PerDay" in msg or "daily quota" in msg  # waiting minutes will not help a daily limit
+                if attempt == retries or daily or not any(x in msg for x in ("429", "RESOURCE_EXHAUSTED", "rate limit", "Rate limit", "ThrottlingException", "503", "UNAVAILABLE")):
                     raise
                 time.sleep(15 * (attempt + 1))
 
@@ -133,6 +134,24 @@ class OpenRouterLLM(GroqLLM):
     key_field = "openrouter_api_key"
 
 
+class NvidiaLLM(GroqLLM):
+    """NVIDIA API catalog (build.nvidia.com): free credits, OpenAI-compatible. Key: NVIDIA_API_KEY.
+    Thinking is turned off so judge replies stay plain JSON."""
+    provider = "nvidia"
+    base_url = "https://integrate.api.nvidia.com/v1"
+    key_field = "nvidia_api_key"
+
+    def stream(self, system, user, max_tokens=1500):
+        resp = self.client.chat.completions.create(
+            model=self.model, stream=True, max_tokens=max(max_tokens, 2000), temperature=0.1,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        for ev in resp:
+            if ev.choices and ev.choices[0].delta.content:
+                yield ev.choices[0].delta.content
+
+
 class GeminiLLM(LLM):
     provider = "gemini"
 
@@ -175,7 +194,7 @@ class BedrockLLM(LLM):
                 yield text
 
 
-PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GroqLLM, OpenRouterLLM, GeminiLLM, BedrockLLM)}
+PROVIDERS = {c.provider: c for c in (OllamaLLM, AnthropicLLM, OpenAILLM, GroqLLM, OpenRouterLLM, NvidiaLLM, GeminiLLM, BedrockLLM)}
 
 
 def get_llm(spec: str | None = None) -> LLM:

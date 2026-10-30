@@ -1138,7 +1138,7 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `bench_tune_20261029_2344` | 16 retrieval variants on the full index | `dense_weight=0.5` the best variant (20.10) |
 | `dense_weight_check.csv` (2026-10-30) | `dense_weight` 1.0 vs 0.5 on 240 fresh document questions | 0.5 confirmed (+0.016 [0.01-0.03]) and made the default |
 | `ctx_chunk.jsonl`, `ctx_parent.jsonl` (2026-10-30) | chunk vs parent context, 60 document answers, Gemini 3.5 Flash-Lite | parent 93% vs chunk 83% correct (20.9) |
-| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks complete for 3 models; LLM judge blocked by free-tier quota (20.11) | 
+| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) complete for 4 models, 2 Gemini models partial (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1386,7 +1386,7 @@ Findings:
 
 By question type, transcription lookups rise from 67% to 100% and Open-i patient lookups from 93% to 100%; content-search questions do not change (they depend on retrieval). Paired per question: parent is better on 6 and worse on none, a gain of **+0.10 [0.03-0.18]**. Citations stay as precise (0.96), so the longer context did not lead the model to cite unsupported text. The cost is a longer prompt and 0.3 s more per answer. Long transcription notes are split into several chunks, and a question about the note's conclusion often retrieves a chunk without it; the whole record fixes that.
 
-**Decision: parent context is now the default for answers** (`ANSWER_CONTEXT=parent`; `chunk` restores the old behaviour, and `eval --context` overrides it per run). The judge's faithfulness scores (D) are still pending and would confirm it with a second measure. The generation comparison in 20.11 keeps chunk context (`scripts/run_d_loop.ps1` passes `--context chunk`), so all of its answers stay comparable.
+**Decision: parent context is now the default for answers** (`ANSWER_CONTEXT=parent`; `chunk` restores the old behaviour, and `eval --context` overrides it per run). This comparison used the deterministic checks only; the judged D run (20.11) used chunk context, so it does not measure parent context. The generation comparison in 20.11 keeps chunk context (`scripts/run_d_loop.ps1` passes `--context chunk`), so all of its answers stay comparable.
 
 ### 20.10 Retrieval tuning and ablations (`bench tune`, 2026-10-29)
 
@@ -1443,26 +1443,48 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 **Setup.**
 - 54 questions per model: 3 from each of the 18 question types (24 easy, 18 hard, 12 documents), three times the sample of 20.6-20.7.
 - The same default retrieval, prompt and computed facts for every model. Local models ran on the RTX 4050 GPU through Ollama; Gemini models through Google AI Studio's free tier.
-- Scored with the deterministic checks of section 19.2. Answers and checks are kept in `reports/gen_large*.jsonl`, so a stopped run resumes where it stopped. `scripts/summarise_d.py` builds the table below.
+- Scored twice: with the deterministic checks of section 19.2, and by an LLM judge (1-5 for correctness, faithfulness, answer relevance and context relevance). Answers and scores are kept in `reports/gen_large*.jsonl`, so a stopped run resumes where it stopped. `scripts/summarise_d.py` builds the tables below.
+- Answers use chunk context (`--context chunk`), the setting the run started with, so every answer of a model sees the same kind of context. The default is now parent context (20.9).
+- **Judge:** NVIDIA's `nemotron-3.5-super-vl-120b-a12b` (API catalog, free credits; provider `nvidia`), the same judge for every answer. The Gemini judge (`gemini-3.6-flash`) was abandoned: its free tier stopped after about 10 requests a day, so only 51 of 324 answers had been judged after two days. Answers already written were judged again without being regenerated.
+- **Answer set:** while the Gemini judge was failing, the resume runs answered some questions again, and the tables use the latest answer for each question. Deterministic scores therefore differ slightly from the first version of this section (qwen3:1.7b 80% → 87%, Gemini 3.5 Flash-Lite 85% → 91%): the same models give somewhat different answers from run to run, which is itself a reminder of how small this sample is.
+
+**Deterministic checks**
 
 | Model | Answers | Easy | Hard | Documents | **All** | Fact recall | Correct "not found" | False "not found" | Cites sources | Citation precision | Citation coverage | Generation s (median / p95) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Gemini 3.5 Flash-Lite** | 54 | 100% | 67% | 83% | **85%** | 0.90 | 3 of 3 | 8% | 69% | 0.90 | 0.85 | **2.7 / 10.1** |
-| qwen3:1.7b (GPU) | 54 | 88% | 72% | 75% | **80%** | 0.83 | 3 of 3 | **31%** | 43% | 0.70 | 0.35 | 4.2 / 23.9 |
+| **Gemini 3.1 Flash-Lite** | 54 | 100% | 78% | **92%** | **91%** | 0.94 | 3 of 3 | 12% | **78%** | 0.90 | **0.89** | **1.3** / 32.3 |
+| **Gemini 3.5 Flash-Lite** | 54 | 100% | **83%** | 83% | **91%** | 0.94 | 3 of 3 | 8% | 74% | 0.93 | 0.84 | 3.8 / 9.0 |
+| qwen3:1.7b (GPU) | 54 | 92% | **83%** | 83% | **87%** | 0.93 | 3 of 3 | **29%** | 48% | 0.65 | 0.45 | 3.8 / 7.0 |
 | qwen2.5:3b (GPU, default) | 54 | 96% | **83%** | **33%** | **78%** | 0.79 | 3 of 3 | 10% | 31% | 0.88 | 0.10 | 3.9 / 9.2 |
-| Gemini 3.5 Flash (partial) | 35 | 100% | 73% | - | 91% * | 0.99 | 3 of 3 | 0% | 71% | 0.99 | 0.86 | 4.6 / 25.6 |
+| Gemini 3.5 Flash (partial) | 39 | 100% | 80% | - | 92% * | 0.99 | 3 of 3 | 8% | 72% | 0.99 | 0.86 | 4.5 / 22.9 |
+| Gemini 3 Flash preview (partial) | 24 | 100% | - | - | 100% * | 1.00 | 3 of 3 | 0% | 88% | 0.89 | 0.73 | 3.0 / 45.0 |
 
-\* Gemini 3.5 Flash's daily answer quota ran out before the document questions, so its total covers easy and hard only and is not comparable with the others. Gemini 3.1 Flash-Lite and Gemini 3 Flash preview have only 3 answers each so far and are left out. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
+\* Gemini's daily answer quota for these two models ran out before the hard or document questions, so their totals are not comparable with the others. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
+
+**LLM judge** (Nemotron 3.5 Super; "correct" = correctness 4 or 5; "agrees" = the judge's correct/incorrect matches the deterministic check)
+
+| Model | Judged | **Correct** | Easy | Hard | Documents | Correctness | Faithfulness | Answer relevance | Context relevance | Agrees |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Gemini 3.1 Flash-Lite** | 54 | **93%** | 100% | 78% | **100%** | 4.69 | **4.91** | 4.74 | 4.67 | 98% |
+| **Gemini 3.5 Flash-Lite** | 54 | **93%** | 100% | 83% | 92% | 4.70 | 4.87 | 4.72 | 4.70 | 98% |
+| qwen3:1.7b (GPU) | 54 | 78% | 100% | 50% | 75% | 4.19 | 4.52 | 4.22 | 4.72 | 80% |
+| qwen2.5:3b (GPU, default) | 54 | 67% | 83% | 56% | 50% | 3.67 | 4.43 | 3.96 | 4.72 | 81% |
+| Gemini 3.5 Flash (partial) | 37 | 92% * | 100% | 80% | - | 4.73 | 4.81 | 4.73 | 4.62 | 100% |
+| Gemini 3 Flash preview (partial) | 23 | 100% * | 100% | - | - | 5.00 | 5.00 | 4.87 | 4.48 | 100% |
+
+Three answers are missing a judge score because the judge's reply was not valid JSON. Context relevance is about the same for every model (4.5-4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
 
 Findings:
-- **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 2.7 s for Gemini 3.5 Flash-Lite. On the laptop CPU (20.7) the same models needed 43-57 s.
-- **Gemini 3.5 Flash-Lite is the most accurate complete run** (85%), the best on documents (83%) and cites its sources best (coverage 0.85).
-- **qwen2.5:3b** is the strongest on hard questions (83%) but fails document content questions: 0 of 3 on both `doc_semantic` and `doc_transcription_semantic`, so 33% on documents overall. It also cites rarely (coverage 0.10).
-- **qwen3:1.7b** is better on documents (75%) but says "not found" on 31% of questions it could have answered, the same weakness seen in 20.7.
+- **The two Flash-Lite models are the most accurate** (91% on the checks, 93% by the judge) and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
+- **The judge is stricter than the checks on the local models:** qwen3:1.7b drops from 87% to 78% and qwen2.5:3b from 78% to 67%, while for Gemini both methods agree on 98-100% of answers. Of the 21 disagreements on local-model answers, 16 are answers the checks pass and the judge fails, and they show what the keyword checks miss: a trend read backwards (the report says "interval improvement", the answer says "unchanged" or "worse"), a negative question answered with "not found" instead of "no study reports it", study counts swapped between two patients with the same name, and cohort lists padded with patients whose reports do not match. The other 5 are correct answers worded differently from the expected keywords. Faithfulness (4.4-4.5 for the local models against 4.8-4.9 for Gemini) points the same way.
+- **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 1.3-4.5 s for Gemini. On the laptop CPU (20.7) the same models needed 43-57 s.
+- **qwen2.5:3b** is strong on hard questions by the checks (83%) but fails document content questions (33% by the checks, 50% by the judge) and rarely cites (coverage 0.10).
+- **qwen3:1.7b** handles documents better (83% / 75%) but says "not found" on 29% of questions it could have answered, the same weakness seen in 20.7.
 - **Every model fails most finding counts** (`hard_count_finding`, 0-33%), the pipeline issue described in 20.7 (the finding wording is not in the expansion dictionary).
 - **Small samples:** 3 questions per type and 12 document questions, so one answer moves a type by 33 points and documents by 8. Treat differences as directions.
+- **For a private deployment,** qwen3:1.7b is the better local model on this set (78% vs 67% by the judge); a cloud Flash-Lite model is clearly more accurate where sending pseudonymised records to a cloud LLM is allowed (25.1).
 
-**Not done yet: the LLM judge.** Every answer also needs one request to the Gemini judge (`gemini-3.6-flash`) for the 1-5 correctness, faithfulness and relevance scores. The free-tier quota ran out repeatedly after a handful of requests, so only 40 of the 324 planned answers are judged (34 for Gemini 3.5 Flash), too few to compare models. The judged runs resume with `scripts/run_d_loop.ps1` once the quota allows or billing is enabled. The chunk vs parent-document context comparison was run without the judge (20.9): parent context answers 93% of document questions correctly against 83%. 
+The chunk vs parent-document context comparison was run separately, with the deterministic checks only (20.9): parent context answers 93% of document questions correctly against 83%. 
  
 --- 
  
@@ -1630,7 +1652,7 @@ At least: validation on governed real data, with clinicians checking answers; a 
 **Limits** 
 - Counting patients by a finding fails when the question's wording is not in the expansion dictionary ("stones in the gallbladder"). No finding filter is applied, so the computed facts count every study. All 7 models fail it, Gemini included (section 20.7). Fix: recognise findings by meaning as a fallback, or grow the dictionary. 
 - Finding an Open-i report by content alone is the weakest retrieval task (`doc_semantic` MRR 0.73 by default, 20.10), because many chest X-ray reports are nearly identical. 
-- Only 40 of 324 answers in the generation comparison are judged (20.11), so the judge's faithfulness and relevance scores are not yet available per model. 
+- The keyword checks pass some wrong answers that the LLM judge catches: trends read backwards, negative questions answered "not found", padded patient lists (20.11). The checks alone overstate the small local models by about 10 points. 
 - The data is synthetic; real reports are more varied. 
 - Answers are slow on CPU (43-57 s with local models); on a laptop GPU they take about 4 s. 
 - The production controls (25.1) are not security-reviewed and not tested on real data. 
@@ -3222,7 +3244,7 @@ With the same code, data files, seeds and package versions, the data, chunks, te
 | Software and models | Free and open source (local) | 
 | Data | Synthetic (free); Open-i and MTSamples are free public downloads | 
 | Compute | The developer's laptop; no cloud compute used | 
-| LLM judge | Google Gemini free tier (limited by daily quotas per model) | 
+| LLM judge | Google Gemini free tier (limited by daily quotas per model); NVIDIA API catalog free credits for the D comparison (20.11) | 
 | AWS Bedrock | Not used yet. It is pay-per-token. A typical question is about 1,100 input tokens and 100-300 output tokens, so cost per question is small for a "lite" model; check current Bedrock prices before planning | 
  
 --- 

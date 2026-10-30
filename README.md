@@ -169,6 +169,20 @@ Finding a patient's document scores 0.98 (Open-i) and 1.00 (transcriptions). Fin
   - a document question where "back" set a spine filter, which pushed out the documents filter. Now fixed: body part is relaxed before the documents filter, so the right patient is found (documents Hit@8 0.875 → 0.925).
 - **Privacy:** Gemini sees the question and the retrieved records. That is fine for synthetic and public data, not for real patient data without an agreement.
 
+## Benchmarks (2026-10-29)
+
+Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPORT.md` sections 20.8-20.10). Embedding models and chunking were compared on a 15,749-chunk subset; tuning on the full index. All 258 questions with a gold document, MRR@8 with hybrid search + MedCPT reranker.
+
+| Experiment | Best variant | Current | Decision |
+|---|---|---|---|
+| Embedding model (6 tried) | nomic-embed-text 0.951 | bge-small 0.938 | **Keep bge-small.** +0.013 is inside the confidence intervals, at twice the vector size; nomic takes about 2 s per query through Ollama. |
+| Chunking (6 tried) | recursive-220, no overlap 0.940 | section-220 0.938 | **Keep section-220.** All within 0.004; smaller chunks only add 53-73% more chunks. |
+| Retrieval settings (16 tried) | `dense_weight=0.5` 0.952 | default 0.940 | **Keep the default for now.** `dense_weight=0.5` lifts Open-i content search from 0.73 to 0.84 but needs confirming on more than 20 questions. |
+
+- Medical embedding models (MedCPT, pubmedbert) did no better than general ones; the reranker and BM25 close most gaps.
+- Removing the reranker costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions; bge-reranker-v2-m3 matches MedCPT but is 2-4 times slower.
+- LLM query rewrite, multi-query and HyDE add about 4 s per question and do not help overall (rewrite +0.008, the other two worse).
+
 ## Layout
 
 ```

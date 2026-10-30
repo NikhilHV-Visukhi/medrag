@@ -112,7 +112,15 @@ class OllamaEmbedder(Embedder):
     def _embed(self, texts):
         import httpx
 
-        r = httpx.post(f"{get_settings().ollama_url}/api/embed", json={"model": self.model, "input": texts}, timeout=600)
+        import time
+
+        # Ollama's runner process occasionally dies mid-batch (400 "connection refused" from its own
+        # /tokenize); the next request restarts it, so retry a few times before giving up.
+        for attempt in range(4):
+            r = httpx.post(f"{get_settings().ollama_url}/api/embed", json={"model": self.model, "input": texts}, timeout=600)
+            if r.status_code < 400 or attempt == 3:
+                break
+            time.sleep(5 * (attempt + 1))
         r.raise_for_status()
         return np.array(r.json()["embeddings"])
 

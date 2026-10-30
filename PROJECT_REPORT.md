@@ -2,7 +2,7 @@
  
 Everything done in this project, end to end: data collection, quality checks, cleaning, outside documents, chunking, embedding, indexing, retrieval, answering, evaluation (all question types and metrics), every experiment and result, problems hit along the way, fixes, deployment options and known limits. **Part I** (sections 1-28) describes what was done and the results; **Part II** (sections 29-59) is the technical deep dive: for every stage, the method, where it is in the code, how it works with sample code, and why it was chosen; **Part III** (sections 60-72) covers the practical and non-technical side. 
  
-Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 2026-10-28. 
+Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 2026-10-28, benchmarks in sections 20.8-20.10 added 2026-10-30. 
  
 ## Executive summary 
  
@@ -15,6 +15,7 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
  
 **How well it works.** 
 - **Finding the right record:** it is among the top 8 sources for 100% of simple questions, 99% of hard ones (lay wording, misspelt names) and 88% of document questions. 
+- **Design choices tested:** six embedding models, six chunking strategies and 16 retrieval settings were compared. None clearly beat the current setup, so it was kept (sections 20.8-20.10).
 - **Answers:** the best models, local (qwen3) and cloud (Gemini 3 Flash), pass 89% (16 of 18) of exact answer checks. Gemini 3 Flash answers in about 3 seconds, while local models on the laptop CPU take 45 seconds or more. The two remaining failures are pipeline issues, the same for every model (section 20.7). 
  
 **Speed and cost.** 
@@ -1079,7 +1080,7 @@ Reported per difficulty, per question type (MRR), and for paraphrases split by w
  
 | Metric | Meaning | 
 |---|---| 
-| `fact_recall` | share of expected key facts present in the answer (a fact may list alternatives, `ct|computed tomography`) | 
+| `fact_recall` | share of expected key facts present in the answer (a fact may list alternatives, `ct\|computed tomography`) | 
 | `number_correct` | the exact expected number appears (with or without thousands separator) | 
 | `negative_correct` | the answer says no/never/none and does not start with "yes" | 
 | `abstain_correct` | the answer says "not found / no record / does not contain" exactly when it should | 
@@ -1130,7 +1131,10 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `eval_20261028_1350` | phi4-mini, llama3.2:3b on the same 18 questions | model comparison | 
 | `eval_20261028_1847` | Gemini 3 Flash and Gemini 3.1 Flash-Lite on the same 18 questions | local vs cloud comparison; found the cohort-count test bug | 
 | `eval_20261028_2227` | retrieval only, first filter-order fix (all study filters before documents) | documents up, but `lookup_by_mrn` Hit@8 fell to 0.55; rejected | 
-| `eval_20261028_2246` | retrieval only, final filter-order fix (body part before documents) | current retrieval table (20.4) | 
+| `eval_20261028_2246` | retrieval only, final filter-order fix (body part before documents) | current retrieval table (20.4) |
+| `bench_embed_20261029_0050`, `_2258` | 6 embedding models on a 15,749-chunk subset | keep bge-small (20.8) |
+| `bench_chunk_20261029_2325` | 6 chunking strategies on the same subset | keep section-220 (20.9) |
+| `bench_tune_20261029_2344` | 16 retrieval variants on the full index | default kept; `dense_weight=0.5` is a candidate (20.10) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1315,7 +1319,100 @@ Conclusions:
  - Documents have no body part, so nothing matches. The relaxation order then dropped the *documents* filter first, and the search ran over spine X-rays. 
  - **Fixed:** body part is now relaxed before the documents filter (section 44). Documents Hit@8 rises from 0.875 to 0.925; other groups are unchanged. Sara Dey's orthopedic consult is now the top hit, and Gemini 3 Flash answers "Sara Dey" correctly. The table above shows the scores from before the fix. 
 - **Privacy trade-off:** Gemini receives the question and the retrieved record text. That is fine for this synthetic and public data, but not for real patient data without a data-processing agreement (section 69). The local models keep everything on the machine. 
-- **Small sample:** 18 questions per model, so one answer moves a total by about 6 points. 
+- **Small sample:** 18 questions per model, so one answer moves a total by about 6 points.
+
+### 20.8 Embedding models compared (`bench embed`, 2026-10-29)
+
+**Setup.**
+- A benchmark subset of the index: 11,605 records and 15,749 chunks (every gold record of the test set plus a random sample of the rest), so each model's index builds in minutes instead of hours.
+- The same 258 questions with a gold document for every model, and the same pipeline as the default: filters, hybrid search, MedCPT reranker (fuse).
+- Each model gets its own index under `indexes/bench/`. Command: `python -m medrag bench embed --models ...`. Results: `reports/bench_embed_20261029_2258/` (bge-small from `bench_embed_20261029_0050`).
+
+All 258 questions, plus the documents group (hybrid + rerank, with 95% interval):
+
+| Model | Dimensions | Dense MRR | Dense Recall@8 | Dense nDCG@8 | Hybrid+rerank MRR | Recall@8 | nDCG@8 | Documents MRR | Query embedding |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| **bge-small-en-v1.5 (current)** | 384 | 0.918 | 0.953 | 0.927 | 0.938 | 0.981 | 0.948 | 0.855 [0.78-0.92] | 52 ms (CPU) |
+| bge-base-en-v1.5 | 768 | 0.926 | 0.965 | 0.936 | 0.950 | 0.984 | 0.958 | 0.888 [0.83-0.94] | 8 ms |
+| e5-base-v2 | 768 | 0.928 | 0.957 | 0.935 | 0.947 | 0.988 | 0.957 | 0.877 [0.81-0.93] | 7 ms |
+| MedCPT (query / article encoders) | 768 | 0.895 | 0.934 | 0.905 | 0.942 | 0.977 | 0.950 | 0.881 [0.81-0.94] | 5 ms |
+| pubmedbert-base-embeddings | 768 | 0.908 | 0.934 | 0.915 | 0.934 | 0.988 | 0.947 | 0.834 [0.76-0.89] | 8 ms |
+| nomic-embed-text (Ollama) | 768 | 0.928 | 0.965 | 0.938 | **0.951** | 0.988 | **0.960** | **0.895** [0.83-0.95] | 2,129 ms |
+
+Query embedding times are on the RTX 4050 GPU except bge-small (measured earlier on the CPU) and nomic, which goes through Ollama's HTTP API on every query.
+
+Findings:
+- **Easy questions** score 1.000 for every model, and **hard questions** 0.931-0.952 (hybrid + rerank) with overlapping intervals.
+- **Document content search (`doc_semantic`, 20 Open-i questions) is where models differ:** dense-only MRR ranges from 0.15 (pubmedbert) to 0.47 (bge-base), and hybrid + rerank from 0.49 (pubmedbert) to 0.75 (nomic), against 0.30 / 0.55 for bge-small.
+- **Medical models are not better here.** MedCPT has the lowest dense scores overall, and pubmedbert the lowest after reranking. The reranker and BM25 make up most of the gap for every model.
+- **Cost:** every alternative has 768 dimensions, twice the vector size of bge-small (46 MB instead of 23 MB on this subset). Index builds took 460-650 s per 1,000 chunks on the old laptop's CPU (MedCPT, bge-base, e5) and 8.9 s per 1,000 on the GPU (pubmedbert). Model memory was not measured (`model_ram_mb` is always 0, a known issue).
+
+**Decision: keep bge-small.** The rule was to switch only if a model clearly beats it. The best gain is +0.013 MRR (nomic), inside the confidence intervals, for twice the vector size, and nomic's queries take about 2 s through Ollama.
+
+### 20.9 Chunking strategies compared (`bench chunk`, 2026-10-29)
+
+**Setup.** The same subset, questions and pipeline as 20.8, with bge-small. Six ways to split the text:
+- `section-N`: split at report sections, at most N words per chunk (the current method is `section-220`).
+- `recursive-N-oM`: a generic recursive splitter with at most N words per chunk and an M-word overlap.
+
+Results: `reports/bench_chunk_20261029_2325/`.
+
+| Chunking | Chunks | Mean words | Dense MRR | Hybrid+rerank MRR | Recall@8 | nDCG@8 | Documents MRR |
+|---|---:|---:|---:|---:|---:|---:|---|
+| **section-220 (current)** | 15,749 | 119 | 0.918 | 0.938 | 0.981 | 0.948 | 0.855 [0.78-0.92] |
+| section-120 | 24,124 | 97 | 0.920 | 0.938 | 0.977 | 0.947 | 0.857 [0.79-0.92] |
+| section-350 | 13,408 | 129 | 0.919 | 0.938 | 0.981 | 0.948 | 0.855 [0.79-0.92] |
+| recursive-220-o40 | 16,422 | 125 | 0.920 | 0.938 | 0.981 | 0.948 | 0.855 [0.78-0.92] |
+| recursive-220-o0 | 15,404 | 117 | 0.920 | 0.940 | 0.981 | 0.949 | 0.861 [0.79-0.92] |
+| recursive-120-o20 | 27,259 | 100 | 0.916 | 0.936 | 0.977 | 0.946 | 0.849 [0.78-0.91] |
+
+Findings:
+- **No difference:** overall MRR is within 0.004 across all six, hard questions score exactly the same (0.943), and documents move by at most 0.012 with intervals of about ±0.07.
+- **Why:** most records are short (mean 119 words), so the size limit rarely applies. Only documents get split, into 1.4-4.75 chunks each.
+- **Smaller chunks only cost more:** 120-word chunks give 53-73% more chunks, a larger index and a slower build, with no gain.
+
+**Decision: keep `section-220`.** Comparing answer faithfulness with chunk vs parent-document context (`eval --context chunk` vs `--context parent`) needs the judged answer run, so it belongs with the generation comparison (D), which is still running.
+
+### 20.10 Retrieval tuning and ablations (`bench tune`, 2026-10-29)
+
+**Setup.**
+- The full index (121,335 chunks) and all 258 questions with a gold document, on the RTX 4050 GPU.
+- One setting changed at a time from the default: `rrf_k=60`, `dense_weight=1.0`, `candidates=60`, `rerank_pool=30`, MedCPT reranker (fuse).
+- Query rewrite, multi-query and HyDE call an LLM (qwen2.5:3b via Ollama) before searching. They were tested only on the 5 semantic question types (100 questions: semantic, hard paraphrase, hard semantic cohort, doc semantic, doc transcription semantic) and compared with the default on the same questions. The generated text is cached in `reports/rewrite_cache.json`.
+
+Results: `reports/bench_tune_20261029_2344/`.
+
+| Variant | MRR | Recall@8 | nDCG@8 | Hard MRR | Documents MRR | `doc_semantic` MRR | Latency (documents) |
+|---|---:|---:|---:|---:|---|---:|---:|
+| **default** | 0.940 | 0.983 | 0.950 | 0.905 | 0.901 [0.84-0.95] | 0.727 | 0.36 s |
+| rrf_k=20 | 0.946 | 0.983 | 0.954 | 0.913 | 0.911 [0.85-0.96] | 0.771 | 0.35 s |
+| rrf_k=100 | 0.940 | 0.983 | 0.950 | 0.905 | 0.901 [0.84-0.95] | 0.727 | 0.28 s |
+| **dense_weight=0.5** | **0.952** | **0.984** | **0.960** | **0.924** | **0.921** [0.86-0.97] | **0.835** | 0.25 s |
+| dense_weight=2 | 0.938 | 0.969 | 0.944 | 0.911 | 0.887 [0.82-0.95] | 0.675 | 0.24 s |
+| candidates=40 | 0.944 | 0.983 | 0.953 | 0.905 | 0.914 [0.85-0.96] | 0.779 | 0.25 s |
+| candidates=100 | 0.939 | 0.979 | 0.948 | 0.905 | 0.897 [0.83-0.95] | 0.714 | 0.25 s |
+| rerank_pool=20 | 0.940 | 0.983 | 0.950 | 0.905 | 0.901 [0.84-0.95] | 0.727 | 0.18 s |
+| rerank_pool=50 | 0.945 | 0.983 | 0.953 | 0.905 | 0.916 [0.85-0.97] | 0.788 | 0.35 s |
+| reranker bge-reranker-v2-m3 | 0.949 | 0.988 | 0.958 | 0.911 | 0.921 [0.86-0.97] | 0.808 | 0.86 s |
+| reranker MiniLM | 0.939 | 0.979 | 0.948 | 0.885 | 0.916 [0.86-0.97] | 0.790 | 0.08 s |
+| no reranker (hybrid only) | 0.927 | 0.983 | 0.940 | 0.875 | 0.887 [0.82-0.95] | 0.700 | 0.03 s |
+
+Query transformations, on the 100 semantic questions only:
+
+| Variant | MRR | Recall@8 | nDCG@8 | Hard MRR | Documents MRR | Latency (documents) |
+|---|---:|---:|---:|---:|---|---:|
+| **default** | 0.876 | 0.957 | 0.893 | 0.876 | 0.814 [0.71-0.91] | 0.42 s |
+| query rewrite | 0.884 | 0.957 | 0.898 | 0.848 | 0.861 [0.75-0.95] | 4.58 s |
+| multi-query | 0.859 | 0.953 | 0.878 | 0.852 | 0.807 [0.69-0.91] | 4.54 s |
+| HyDE | 0.863 | 0.947 | 0.882 | 0.832 | 0.826 [0.72-0.93] | 4.93 s |
+
+Findings:
+- **No change is clearly better than the default.** Every difference falls inside the confidence intervals.
+- **`dense_weight=0.5`** (BM25 counts twice as much as the dense ranking) is the best variant overall (+0.012 MRR) and on `doc_semantic` (0.727 → 0.835), where Open-i reports share near-identical wording and exact terms matter. It is slightly worse on hard semantic cohort questions (0.815 → 0.789). It is the one candidate worth adopting, but `doc_semantic` has only 20 questions, so it needs confirming on a larger set first.
+- **The reranker earns its place:** removing it costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions (0.905 vs 0.885). bge-reranker-v2-m3 matches MedCPT, but it is a 2.3 GB model and 2-4 times slower per query.
+- **`rrf_k`, `candidates` and `rerank_pool`** each move MRR by 0.006 or less.
+- **LLM query transformations are not worth it:** query rewrite helps semantic document questions (+0.047) but hurts hard semantic ones (-0.028), a net +0.008 for about 4 s and one LLM call per question. Multi-query and HyDE are worse than the default. None were adopted.
+- **The default documents MRR here (0.901) is higher than in 20.4 (0.859)** because the `doc_semantic` questions were fixed: 9 of the 20 old questions matched several near-identical reports, so a "wrong" top hit could be an equally correct report. Questions must now match exactly one report, and `doc_semantic` MRR rose from 0.562 to 0.727. 
  
 --- 
  

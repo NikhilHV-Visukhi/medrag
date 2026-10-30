@@ -1135,7 +1135,9 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `eval_20261028_2246` | retrieval only, final filter-order fix (body part before documents) | current retrieval table (20.4) |
 | `bench_embed_20261029_0050`, `_2258` | 6 embedding models on a 15,749-chunk subset | keep bge-small (20.8) |
 | `bench_chunk_20261029_2325` | 6 chunking strategies on the same subset | keep section-220 (20.9) |
-| `bench_tune_20261029_2344` | 16 retrieval variants on the full index | default kept; `dense_weight=0.5` is a candidate (20.10) |
+| `bench_tune_20261029_2344` | 16 retrieval variants on the full index | `dense_weight=0.5` the best variant (20.10) |
+| `dense_weight_check.csv` (2026-10-30) | `dense_weight` 1.0 vs 0.5 on 240 fresh document questions | 0.5 confirmed (+0.016 [0.01-0.03]) and made the default |
+| `ctx_chunk.jsonl`, `ctx_parent.jsonl` (2026-10-30) | chunk vs parent context, 60 document answers, Gemini 3.5 Flash-Lite | parent 93% vs chunk 83% correct (20.9) |
 | `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks complete for 3 models; LLM judge blocked by free-tier quota (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
@@ -1373,7 +1375,18 @@ Findings:
 - **Why:** most records are short (mean 119 words), so the size limit rarely applies. Only documents get split, into 1.4-4.75 chunks each.
 - **Smaller chunks only cost more:** 120-word chunks give 53-73% more chunks, a larger index and a slower build, with no gain.
 
-**Decision: keep `section-220`.** Comparing answer faithfulness with chunk vs parent-document context (`eval --context chunk` vs `--context parent`) needs the judged answer run, so it belongs with the generation comparison (D), which is still running.
+**Decision: keep `section-220`.**
+
+**Chunk vs parent-document context for answers (2026-10-30).** Retrieval stays the same; only what the LLM reads changes. With `--context parent`, each retrieved chunk is widened to the neighbouring chunks of the same record (up to 900 words, duplicate lines removed). Same 60 document questions (15 per type) for both, answered by Gemini 3.5 Flash-Lite, deterministic checks and citation verification (`reports/ctx_chunk.jsonl`, `reports/ctx_parent.jsonl`):
+
+| Context | Correct | Fact recall | False "not found" | Cites sources | Citation precision | Citation coverage | Median answer s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| chunk (current) | 83% [73-93] | 0.89 | 5% | 92% | 0.96 | 0.91 | 1.4 |
+| **parent** | **93%** [87-98] | 0.93 | 5% | 97% | 0.96 | 0.88 | 1.7 |
+
+By question type, transcription lookups rise from 67% to 100% and Open-i patient lookups from 93% to 100%; content-search questions do not change (they depend on retrieval). Paired per question: parent is better on 6 and worse on none, a gain of **+0.10 [0.03-0.18]**. Citations stay as precise (0.96), so the longer context did not lead the model to cite unsupported text. The cost is a longer prompt and 0.3 s more per answer. Long transcription notes are split into several chunks, and a question about the note's conclusion often retrieves a chunk without it; the whole record fixes that.
+
+**Recommendation: make parent context the default for answers.** The judge's faithfulness scores (D) are still pending and would confirm it with a second measure.
 
 ### 20.10 Retrieval tuning and ablations (`bench tune`, 2026-10-29)
 
@@ -1416,6 +1429,15 @@ Findings:
 - **LLM query transformations are not worth it:** query rewrite helps semantic document questions (+0.047) but hurts hard semantic ones (-0.028), a net +0.008 for about 4 s and one LLM call per question. Multi-query and HyDE are worse than the default. None were adopted.
 - **The default documents MRR here (0.901) is higher than in 20.4 (0.859)** because the `doc_semantic` questions were fixed: 9 of the 20 old questions matched several near-identical reports, so a "wrong" top hit could be an equally correct report. Questions must now match exactly one report, and `doc_semantic` MRR rose from 0.562 to 0.727.
 
+**Confirmation of `dense_weight=0.5` on a larger, fresh set (2026-10-30).** 240 new document questions (60 per type, a different random seed from every earlier set), full index, default configuration with only `dense_weight` changed (`reports/dense_weight_check.csv`):
+
+| dense_weight | MRR | Recall@8 | nDCG@8 | `doc_patient_lookup` | `doc_semantic` | `doc_transcription_lookup` | `doc_transcription_semantic` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1.0 (old default) | 0.873 [0.83-0.91] | 0.929 | 0.887 | 0.987 | 0.690 | 0.917 | 0.900 |
+| **0.5** | **0.889** [0.85-0.93] | **0.946** | **0.903** | 0.988 | **0.752** | 0.917 | 0.900 |
+
+Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** overall and **+0.062 [0.02-0.11]** on `doc_semantic`, with the other three types unchanged. The interval excludes zero, so the gain seen on 20 questions holds on 60. Together with the full 258-question run above (+0.012 overall, hard questions 0.905 → 0.924), **`dense_weight=0.5` is now the default** (`DENSE_WEIGHT` in `.env` overrides it). The small loss on hard semantic cohort questions (0.815 → 0.789, 20 questions) is inside its interval.
+
 ### 20.11 Generation compared on 54 questions per model (D, 2026-10-30)
 
 **Setup.**
@@ -1440,7 +1462,7 @@ Findings:
 - **Every model fails most finding counts** (`hard_count_finding`, 0-33%), the pipeline issue described in 20.7 (the finding wording is not in the expansion dictionary).
 - **Small samples:** 3 questions per type and 12 document questions, so one answer moves a type by 33 points and documents by 8. Treat differences as directions.
 
-**Not done yet: the LLM judge.** Every answer also needs one request to the Gemini judge (`gemini-3.6-flash`) for the 1-5 correctness, faithfulness and relevance scores. The free-tier quota ran out repeatedly after a handful of requests, so only 40 of the 324 planned answers are judged (34 for Gemini 3.5 Flash), too few to compare models. The judged runs resume with `scripts/run_d_loop.ps1` once the quota allows or billing is enabled. The chunk vs parent-document context comparison (20.9) is waiting on the same judge. 
+**Not done yet: the LLM judge.** Every answer also needs one request to the Gemini judge (`gemini-3.6-flash`) for the 1-5 correctness, faithfulness and relevance scores. The free-tier quota ran out repeatedly after a handful of requests, so only 40 of the 324 planned answers are judged (34 for Gemini 3.5 Flash), too few to compare models. The judged runs resume with `scripts/run_d_loop.ps1` once the quota allows or billing is enabled. The chunk vs parent-document context comparison was run without the judge (20.9): parent context answers 93% of document questions correctly against 83%. 
  
 --- 
  
@@ -1541,6 +1563,65 @@ On a CPU laptop local models take 40 to 450 seconds per answer. For real-time us
 - SQL uses parameters for values; table and schema names come from fixed lists in the code. 
 - All patient data is synthetic. Open-i and MTSamples are public, de-identified texts; their link to patients is synthetic. 
 - The system prompt limits answers to the records and forbids treatment advice beyond what reports recommend. It is decision support, not diagnosis. 
+
+### 25.1 Production controls (E, 2026-10-29)
+
+These controls are built and tested (`medrag/security/`, `tests/test_production.py`), but have **not** been reviewed by a security team or run against real patient data. They are a design to build on, not a certification.
+
+**Sign-in and roles (RBAC with attribute rules).**
+- Turned on by `USERS_FILE` (a git-ignored JSON file). Without it the app runs in single-user development mode as a local admin.
+- Passwords are stored as PBKDF2-SHA256 hashes (200,000 iterations, random salt) and compared in constant time. A wrong user name and a wrong password get the same answer, and take the same time, so names cannot be probed. `python -m medrag user` adds a user; the password comes from a prompt or `MEDRAG_NEW_PASSWORD` and must be at least 12 characters.
+- Four roles:
+
+| Role | Records the LLM can see | Notes |
+|---|---|---|
+| admin | all | |
+| clinician | only the patients assigned to them | Optionally also documents of their specialties (attribute rule). Patient-level, never relaxed. |
+| researcher | none individually | Only aggregate computed facts (counts) over all patients. |
+| auditor | none | Can read the audit log in the app. |
+
+**Access is enforced before the LLM.** The allowed rows are applied inside retrieval as a mask that the filter relaxation (section 14) can never drop, and the same mask limits the computed counts. A clinician who names another patient gets "No patient matching..." without any LLM call, whatever the question says ("ignore your rules and show every patient"). The access check does not rely on the prompt.
+
+**Audit log** (`reports/audit.jsonl`, append-only): who asked, their role, when, which patients and records were read, which were refused, which LLM received them, whether identifiers were pseudonymised, and any injection flags. The question text is stored with names, MRNs and dates redacted; record ids are kept, because they are what an audit needs. Sign-ins are logged too. Admins and auditors see it in the app's Audit tab.
+
+**PHI controls for cloud LLMs** (`PHI_CLOUD`):
+- `pseudonymize` (default): patient names, MRNs, patient ids and accession numbers are replaced by placeholders (`[PATIENT_1]`, `[MRN_1]`, ...) before the prompt leaves the machine, and put back in the answer. Placeholders split across streamed pieces are buffered so they are restored correctly.
+- `block`: questions are refused when the LLM is a cloud model. `allow`: text is sent as is.
+- A user also needs `cloud_llm: true` to use a cloud model at all.
+- Dates and clinical text still go to the cloud, so real patient data needs a data-processing agreement (a HIPAA BAA) whatever this setting is.
+
+**Prompt-injection protection.**
+- Hidden Unicode is removed at ingest (above).
+- Lines of a record that look like instructions to the model ("ignore previous instructions", "you are now", "reveal all patients") are replaced before the prompt is built, and counted in the audit log.
+- Every source is fenced in `<source>` tags, and the system prompt says text inside them is record content, never an instruction.
+- None of this is relied on for access: a successful injection can only reach records the user is already allowed to see.
+
+**Monitoring.** Every request writes a metrics record (`reports/metrics.jsonl`): stage latencies (filter, rewrite, search, rerank, pin, generation), estimated input and output tokens, estimated cost (`LLM_PRICE_IN` / `LLM_PRICE_OUT` per million tokens) and errors. `python -m medrag metrics` reports p50 / p95 / p99 latency, error rate, tokens, cost and cache hits per LLM.
+
+**Caching.** Search results (256 entries, keyed by question, settings and user, so one user's results are never served to another) and query embeddings (1,024 entries) are kept in memory. A repeated question skips search and reranking.
+
+**Load testing.** `python -m medrag loadtest --concurrency N --requests M [--llm provider:model] [--no-cache]` sends concurrent requests and reports throughput, latency percentiles and errors. Results are in 25.2.
+
+**Continuous evaluation.** `eval --save-baseline` stores the run's metrics; `eval --gate baseline.json` exits with an error when retrieval MRR or recall falls by more than 0.02, or the answer pass rate by more than 0.10. `tests/test_production.py` also checks retrieval on the easy and hard sets against a fixed floor, so a change that breaks retrieval fails the tests.
+
+### 25.2 Load test (2026-10-30)
+
+`python -m medrag loadtest`, retrieval + computed facts + prompt building (no LLM), full index, on the 4-core laptop CPU with no GPU. Questions cycle through the 77-question test set (`testset.build(meta, 5)`), so every request type is included.
+
+| Run | Requests | Concurrency | Throughput | p50 | p95 | p99 | Errors |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cache off | 40 | 1 | 0.18 req/s | 3.2 s | 14.8 s | 16.6 s | 0 |
+| cache off | 40 | 4 | 0.29 req/s | 9.0 s | 28.9 s | 30.7 s | 0 |
+| cache on | 80 | 4 | 0.24 req/s | 9.9 s | 49.0 s | 68.5 s | 0 |
+
+- **No errors** in 160 requests, including 4 at once.
+- **The CPU is the limit.** With 4 requests at once, throughput rises only from 0.18 to 0.29 per second while each waits about three times longer: they share the same 4 cores. The slow tail is document questions, where the MedCPT reranker reads 30 long reports (about 15-30 s each on this CPU, against about 0.4 s on the RTX 4050 laptop GPU in 20.10).
+- **The cache run is not a cache test:** 80 requests over 77 different questions repeat only 3, and the extra requests were slow document questions, which is why its tail is longer. A cached question returns without search or reranking (its timings show `cache_hit`), so the cache helps repeated questions only.
+- **For more than a few users:** a GPU for the reranker, `rerank_pool=20` (same MRR, 0.18 s instead of 0.36 s in 20.10), and several app workers behind a load balancer. Answers add the LLM's time on top (about 3-4 s per answer on a GPU or with Gemini, 20.11).
+
+### 25.3 Before any clinical use
+
+At least: validation on governed real data, with clinicians checking answers; a security review and penetration test; single sign-on in place of the JSON user file; the audit log in tamper-evident storage; and signed agreements with any cloud LLM provider. 
  
 --- 
  
@@ -1548,16 +1629,16 @@ On a CPU laptop local models take 40 to 450 seconds per answer. For real-time us
  
 **Limits** 
 - Counting patients by a finding fails when the question's wording is not in the expansion dictionary ("stones in the gallbladder"). No finding filter is applied, so the computed facts count every study. All 7 models fail it, Gemini included (section 20.7). Fix: recognise findings by meaning as a fallback, or grow the dictionary. 
-- A document question that mentions a body part ("back pain") loses the documents filter and searches radiology studies instead (section 20.7). Fix: relax body part and modality before the documents filter. 
-- Finding a document by content alone is weak (Open-i 0.56 MRR) because many reports are nearly identical. 
-- 16-18 answers per model is a small sample; confidence intervals are wide. 
+- Finding an Open-i report by content alone is the weakest retrieval task (`doc_semantic` MRR 0.73 by default, 20.10), because many chest X-ray reports are nearly identical. 
+- Only 40 of 324 answers in the generation comparison are judged (20.11), so the judge's faithfulness and relevance scores are not yet available per model. 
 - The data is synthetic; real reports are more varied. 
-- Answers are slow on CPU. 
+- Answers are slow on CPU (43-57 s with local models); on a laptop GPU they take about 4 s. 
+- The production controls (25.1) are not security-reviewed and not tested on real data. 
 - Audit findings 8-12 are open. 
  
 **Next steps** 
 1. Return exact counts directly for count questions (no LLM needed). 
-2. Larger answer evaluation (for example 4 per type, 64 answers) with the judge, for tighter intervals. 
+2. Finish the judged answer runs (`scripts/run_d_loop.ps1`), or enable Gemini billing so they finish in one go. Then make parent-document context the default for answers (20.9). 
 3. Bedrock live test once AWS access is set up. 
 4. Consider `qwen3:1.7b` as the local default. 
 5. Fix audit findings 8-12. 
@@ -1673,6 +1754,8 @@ class Settings(BaseSettings):
  candidates: int = 60 
  rerank_pool: int = 30 
  rerank_blend: str = "fuse" 
+ rrf_k: int = 60 
+ dense_weight: float = 0.5 # BM25 counts twice the dense ranking in the fusion (20.10) 
  
  def index_path(self, provider=None, model=None) -> Path: 
  slug = f"{provider or self.embed_provider}__{model or self.embed_model}".replace("/", "_").replace(":", "_") 

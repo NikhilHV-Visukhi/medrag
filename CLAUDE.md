@@ -44,8 +44,10 @@ controls. All code for A-E is written, committed and tested.
 **Status 2026-10-30:** A, B and C are run and written up (PROJECT_REPORT.md 20.8-20.10, README Benchmarks).
 D's deterministic checks are done for qwen2.5:3b, qwen3:1.7b and gemini-3.5-flash-lite (54 answers each, 20.11);
 gemini-3.5-flash has 35, the other two Gemini models 3. The LLM judge is blocked by the free-tier quota (40 of 324
-judged). Still to do: judged D runs (`scripts/run_d_loop.ps1 -Only cloud|local`, check quota with
-`scripts/probe_quota.py`), chunk vs parent context, the E write-up. The sections below are the original plan.
+judged). Also done (2026-10-30, report 20.9, 20.10, 25.1-25.3): chunk vs parent context (parent 93% vs 83%,
+recommended as default, not yet switched), `dense_weight=0.5` confirmed on 240 fresh questions and made the
+default, the E write-up and a CPU load test. Still to do: judged D runs (`scripts/run_d_loop.ps1 -Only cloud|local`,
+check quota with `scripts/probe_quota.py`), then switch answers to parent context. The sections below are the original plan.
 
 Done in code: `medrag/eval/bench.py` (A/B/C), `medrag/retrieval/rewrite.py` (query rewrite, multi-query, HyDE),
 `medrag/security/` (users/RBAC, patient-level access before the LLM, audit + metrics JSONL, PHI

@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     rerank_pool: int = 30  # fused candidates re-scored by the cross-encoder
     rerank_blend: str = "fuse"  # fuse = RRF of hybrid and reranker order; replace = reranker order only
     rrf_k: int = 60  # Reciprocal Rank Fusion constant: lower = top ranks count more
-    dense_weight: float = 1.0  # weight of the dense ranking against BM25 (1.0) in the fusion
+    dense_weight: float = 0.5  # weight of the dense ranking against BM25 (1.0) in the fusion; 0.5 chosen in PROJECT_REPORT 20.10
     query_rewrite: str = "none"  # none | rewrite | multi | hyde (LLM-based query transformation, see retrieval/rewrite.py)
     rewrite_llm: str = ""  # provider:model for query_rewrite; default: the answering LLM
     retrieval_cache_size: int = 256  # identical questions from the same access scope reuse the result; 0 = off

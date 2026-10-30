@@ -177,7 +177,7 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 |---|---|---|---|
 | Embedding model (6 tried) | nomic-embed-text 0.951 | bge-small 0.938 | **Keep bge-small.** +0.013 is inside the confidence intervals, at twice the vector size; nomic takes about 2 s per query through Ollama. |
 | Chunking (6 tried) | recursive-220, no overlap 0.940 | section-220 0.938 | **Keep section-220.** All within 0.004; smaller chunks only add 53-73% more chunks. |
-| Retrieval settings (16 tried) | `dense_weight=0.5` 0.952 | default 0.940 | **Keep the default for now.** `dense_weight=0.5` lifts Open-i content search from 0.73 to 0.84 but needs confirming on more than 20 questions. |
+| Retrieval settings (16 tried) | `dense_weight=0.5` 0.952 | old default 0.940 | **Adopted `dense_weight=0.5`** (BM25 weighted twice the dense ranking). Confirmed on 240 fresh document questions: +0.016 MRR [0.01-0.03], content search +0.062, nothing worse. |
 
 - Medical embedding models (MedCPT, pubmedbert) did no better than general ones; the reranker and BM25 close most gaps.
 - Removing the reranker costs 0.013 MRR overall and 0.030 on hard questions. MedCPT beats MiniLM on hard questions; bge-reranker-v2-m3 matches MedCPT but is 2-4 times slower.
@@ -191,7 +191,11 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 | qwen3:1.7b (laptop GPU) | 88% | 72% | 75% | **80%** | 31% | 4.2 |
 | qwen2.5:3b (laptop GPU, default) | 96% | 83% | 33% | **78%** | 10% | 3.9 |
 
+**Answer context:** giving the LLM each retrieved chunk's whole record (`eval --context parent`) instead of the chunk alone raises document answers from 83% to 93% correct (60 questions, Gemini 3.5 Flash-Lite; +0.10 [0.03-0.18] paired), mostly on long transcription notes, with citations just as precise.
+
 On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". LLM-judge scores are still pending: the Gemini free tier allowed only 40 of 324 judge calls.
+
+**Production controls** (`PROJECT_REPORT.md` section 25): sign-in with four roles (admin, clinician, researcher, auditor), patient-level access enforced in retrieval before any record reaches the LLM, an audit log, pseudonymised identifiers for cloud LLMs, prompt-injection guards, per-request latency / token / cost metrics (`python -m medrag metrics`), caching, a load test (`python -m medrag loadtest`) and a quality gate (`eval --gate`). Load test on the laptop CPU, retrieval only: 0 errors in 160 requests, p50 3.2 s and p95 14.8 s for one user; four users at once share the CPU (p95 29 s), so more users need a GPU for the reranker. Not security-reviewed, and not validated on real patient data: it is not ready for clinical use.
 
 Helper scripts are in `scripts/`: `run_chain.sh` (benchmarks A-C), `run_d_loop.ps1` (answer evaluation with the judge, resumable), `summarise_d.py` (table above), `probe_quota.py` (checks Gemini quota without printing the key).
 

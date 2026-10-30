@@ -1138,7 +1138,7 @@ Every mean is reported with a **bootstrap 95% confidence interval** (1,000 resam
 | `bench_tune_20261029_2344` | 16 retrieval variants on the full index | `dense_weight=0.5` the best variant (20.10) |
 | `dense_weight_check.csv` (2026-10-30) | `dense_weight` 1.0 vs 0.5 on 240 fresh document questions | 0.5 confirmed (+0.016 [0.01-0.03]) and made the default |
 | `ctx_chunk.jsonl`, `ctx_parent.jsonl` (2026-10-30) | chunk vs parent context, 60 document answers, Gemini 3.5 Flash-Lite | parent 93% vs chunk 83% correct (20.9) |
-| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) 312 of 324 judged; Gemini 3 Flash preview partial (20.11) | 
+| `reports/gen_large*.jsonl` (2026-10-29/30) | 54 questions per model, local models on GPU and Gemini | deterministic checks and LLM judge (NVIDIA Nemotron 3.5 Super) all 324 answers judged, 6 models (20.11) | 
  
 ### 20.2 Embedding model: bge-small vs hash baseline (`eval_20261027_1726`, easy set) 
  
@@ -1456,10 +1456,10 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | **Gemini 3.5 Flash-Lite** | 54 | 100% | **83%** | 83% | **91%** | 0.94 | 3 of 3 | 8% | 74% | 0.93 | 0.84 | 3.8 / 9.0 |
 | qwen3:1.7b (GPU) | 54 | 92% | **83%** | 83% | **87%** | 0.93 | 3 of 3 | **29%** | 48% | 0.65 | 0.45 | 3.8 / 7.0 |
 | qwen2.5:3b (GPU, default) | 54 | 96% | **83%** | **33%** | **78%** | 0.79 | 3 of 3 | 10% | 31% | 0.88 | 0.10 | 3.9 / 9.2 |
-| **Gemini 3.5 Flash** | 53 | 100% | **83%** | **100%** (11) | **94%** | 0.99 | 3 of 3 | 6% | 77% | **0.98** | 0.86 | 4.8 / 30.4 |
-| Gemini 3 Flash preview (partial) | 44 | 100% | **89%** | 2 of 2 | 95% * | 1.00 | 3 of 3 | 5% | **93%** | 0.92 | 0.70 | 3.4 / 45.0 |
+| **Gemini 3.5 Flash** | 54 | 100% | 83% | **100%** | **94%** | 0.99 | 3 of 3 | 6% | 78% | **0.98** | 0.84 | 4.7 / 30.0 |
+| **Gemini 3 Flash preview** | 54 | 100% | **89%** | 92% | **94%** | 0.99 | 3 of 3 | **4%** | **94%** | 0.92 | 0.74 | 3.7 / 30.7 |
 
-\* Gemini 3 Flash preview's daily answer quota ran out after 2 of the 12 document questions (Gemini 3.5 Flash after 11), so its total leans on easy and hard questions and is not fully comparable with the others. "False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
+"False not found" is the share of answerable questions where the model said the records did not contain the answer. No answer cited a source number that did not exist.
 
 **LLM judge** (Nemotron 3.5 Super; "correct" = correctness 4 or 5; "agrees" = the judge's correct/incorrect matches the deterministic check)
 
@@ -1469,13 +1469,13 @@ Paired per question, 0.5 is better on 18 and worse on 2: **+0.016 [0.01-0.03]** 
 | **Gemini 3.5 Flash-Lite** | 54 | **93%** | 100% | 83% | 92% | 4.70 | 4.87 | 4.72 | 4.70 | 98% |
 | qwen3:1.7b (GPU) | 54 | 78% | 100% | 50% | 75% | 4.19 | 4.52 | 4.22 | 4.72 | 80% |
 | qwen2.5:3b (GPU, default) | 54 | 67% | 83% | 56% | 50% | 3.67 | 4.43 | 3.96 | 4.72 | 81% |
-| **Gemini 3.5 Flash** | 52 | **94%** | 100% | 83% | 100% | **4.81** | 4.87 | **4.81** | 4.73 | 100% |
-| Gemini 3 Flash preview (partial) | 44 | 95% * | 100% | 89% | 2 of 2 | 4.82 | 4.91 | 4.77 | 4.68 | 100% |
+| **Gemini 3 Flash preview** | 54 | **96%** | 100% | **89%** | 100% | **4.83** | **4.93** | 4.78 | 4.74 | 98% |
+| **Gemini 3.5 Flash** | 54 | 94% | 100% | 83% | 100% | 4.81 | 4.87 | **4.81** | 4.74 | 100% |
 
-312 of 324 planned answers are judged; 10 Gemini 3 Flash preview answers and 1 Gemini 3.5 Flash answer were never generated (daily quota), and a few answers are missing a judge score a judge score because the judge's reply was not valid JSON. Context relevance is about the same for every model (4.5-4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
+All 324 answers are judged. When the judge's reply was not valid JSON (it sometimes drops the quote before `reason`), the four scores are read from the reply directly. Context relevance is about the same for every model (4.7) because every model receives the same retrieved context; it measures retrieval, not the model.
 
 Findings:
-- **The Gemini models are close together** at 93-95% by the judge. Gemini 3.5 Flash is the most accurate complete run (94%, all 11 document answers correct, highest correctness score 4.81); the cheaper Flash-Lite models are within one answer of it (93%) and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
+- **The Gemini models are close together** at 93-96% by the judge, within two answers of each other. Gemini 3 Flash preview scores highest (96%, best on hard questions at 89%, cites sources in 94% of answers) and Gemini 3.5 Flash answered all 12 document questions correctly; the cheaper Flash-Lite models are at 93% and cite their sources best (coverage 0.84-0.89). Gemini 3.1 Flash-Lite answered all 12 document questions correctly according to the judge.
 - **The judge is stricter than the checks on the local models:** qwen3:1.7b drops from 87% to 78% and qwen2.5:3b from 78% to 67%, while for Gemini both methods agree on 98-100% of answers. Of the 21 disagreements on local-model answers, 16 are answers the checks pass and the judge fails, and they show what the keyword checks miss: a trend read backwards (the report says "interval improvement", the answer says "unchanged" or "worse"), a negative question answered with "not found" instead of "no study reports it", study counts swapped between two patients with the same name, and cohort lists padded with patients whose reports do not match. The other 5 are correct answers worded differently from the expected keywords. Faithfulness (4.4-4.5 for the local models against 4.8-4.9 for Gemini) points the same way.
 - **On the GPU, local models answer as fast as the cloud:** the median answer takes about 4 s for qwen2.5:3b and qwen3:1.7b, against 1.3-4.5 s for Gemini. On the laptop CPU (20.7) the same models needed 43-57 s.
 - **qwen2.5:3b** is strong on hard questions by the checks (83%) but fails document content questions (33% by the checks, 50% by the judge) and rarely cites (coverage 0.10).

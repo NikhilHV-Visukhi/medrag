@@ -94,7 +94,12 @@ def _judge(judge, it, ans) -> dict:
     out = {f"judge_{k}": None for k in JUDGE_KEYS} | {"judge_reason": None}
     try:
         raw = judge.complete("You are a strict, fair evaluator. Output JSON only.", prompt, 600)
-        j = json.loads(re.search(r"\{.*\}", raw, re.S).group(0))
+        try:
+            j = json.loads(re.search(r"\{.*\}", raw, re.S).group(0))
+        except (AttributeError, ValueError):  # judges sometimes drop a quote around "reason": read the scores directly
+            j = {k: re.search(rf'"{k}"\s*:\s*(\d+(?:\.\d+)?)', raw).group(1) for k in JUDGE_KEYS}
+            m = re.search(r'"reason"\s*:\s*"?(.*?)"?\s*\}?\s*$', raw, re.S)
+            j["reason"] = m.group(1) if m else None
         out |= {f"judge_{k}": float(j[k]) for k in JUDGE_KEYS} | {"judge_reason": j.get("reason")}
     except Exception as e:  # a judge failure should not lose the answer's other metrics
         out["judge_reason"] = f"judge error: {str(e)[:150]}"

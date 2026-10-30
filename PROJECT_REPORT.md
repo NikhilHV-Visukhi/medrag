@@ -16,7 +16,7 @@ Repository: https://github.com/nikhilhv414/medrag (branch `main`). Report date: 
 **How well it works.** 
 - **Finding the right record:** it is among the top 8 sources for 100% of simple questions, 99% of hard ones (lay wording, misspelt names) and 88% of document questions. 
 - **Design choices tested:** six embedding models, six chunking strategies and 16 retrieval settings were compared. None clearly beat the current setup, so it was kept (sections 20.8-20.10).
-- **Larger answer test (54 questions per model):** Gemini 3.5 Flash-Lite passes 85%, qwen3:1.7b 80% and qwen2.5:3b 78%. On a laptop GPU the local models answer in about 4 s (median), close to the cloud (section 20.11).
+- **Larger answer test (8 models × 54 questions, LLM judge):** Gemini 3 Flash preview is rated correct on 96%, Gemini 3.5 Flash and NVIDIA Nemotron 3.5 Super 94%, the Gemini Flash-Lite models 93%, qwen3:1.7b 78% and qwen2.5:3b 67%. On a laptop GPU the local models answer in about 4 s (median), as fast as the cloud, but less accurately (section 20.11). `END_TO_END_REPORT.md` gives the whole project in one pipeline-ordered read.
 - **Answers:** the best models, local (qwen3) and cloud (Gemini 3 Flash), pass 89% (16 of 18) of exact answer checks. Gemini 3 Flash answers in about 3 seconds, while local models on the laptop CPU take 45 seconds or more. The two remaining failures are pipeline issues, the same for every model (section 20.7). 
  
 **Speed and cost.** 
@@ -1667,7 +1667,7 @@ At least: validation on governed real data, with clinicians checking answers; a 
  
 **Next steps** 
 1. Return exact counts directly for count questions (no LLM needed). 
-2. Finish the judged answer runs (`scripts/run_d_loop.ps1`), or enable Gemini billing so they finish in one go. Then repeat the comparison with parent context, now the default (20.9). 
+2. Repeat the judged answer comparison (20.11, done with chunk context) with parent context, now the default (20.9), and a second, independent judge. 
 3. Bedrock live test once AWS access is set up. 
 4. Consider `qwen3:1.7b` as the local default. 
 5. Fix audit findings 8-12. 

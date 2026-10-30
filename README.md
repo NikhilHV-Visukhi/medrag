@@ -3,6 +3,10 @@
 Question answering over radiology records: patients, imaging studies, AI model predictions and
 radiology reports. Rebuilt from the earlier `LLM_6_Auto` prototype (archived in `../_archive`).
 
+**Reports:** [`END_TO_END_REPORT.md`](END_TO_END_REPORT.md) is the whole project in one read, in pipeline order:
+data, methods, metrics and every result (benchmarks A-C, the 8-model answer comparison D, production controls E).
+[`PROJECT_REPORT.md`](PROJECT_REPORT.md) adds the code-level deep dive and practical notes.
+
 ```
 PostgreSQL / parquet ──► check ──► clean ──► check ──► chunk ──► embed ──► hybrid index
                                                                               │

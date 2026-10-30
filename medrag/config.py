@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     query_rewrite: str = "none"  # none | rewrite | multi | hyde (LLM-based query transformation, see retrieval/rewrite.py)
     rewrite_llm: str = ""  # provider:model for query_rewrite; default: the answering LLM
     retrieval_cache_size: int = 256  # identical questions from the same access scope reuse the result; 0 = off
+    answer_context: str = "parent"  # chunk | parent: what the LLM reads per source; parent chosen in PROJECT_REPORT 20.9
 
     # production controls (medrag/security)
     users_file: str = ""  # JSON of users with password hashes; empty = single-user local mode (admin)

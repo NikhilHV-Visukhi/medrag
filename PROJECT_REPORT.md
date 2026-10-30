@@ -1386,7 +1386,7 @@ Findings:
 
 By question type, transcription lookups rise from 67% to 100% and Open-i patient lookups from 93% to 100%; content-search questions do not change (they depend on retrieval). Paired per question: parent is better on 6 and worse on none, a gain of **+0.10 [0.03-0.18]**. Citations stay as precise (0.96), so the longer context did not lead the model to cite unsupported text. The cost is a longer prompt and 0.3 s more per answer. Long transcription notes are split into several chunks, and a question about the note's conclusion often retrieves a chunk without it; the whole record fixes that.
 
-**Recommendation: make parent context the default for answers.** The judge's faithfulness scores (D) are still pending and would confirm it with a second measure.
+**Decision: parent context is now the default for answers** (`ANSWER_CONTEXT=parent`; `chunk` restores the old behaviour, and `eval --context` overrides it per run). The judge's faithfulness scores (D) are still pending and would confirm it with a second measure. The generation comparison in 20.11 keeps chunk context (`scripts/run_d_loop.ps1` passes `--context chunk`), so all of its answers stay comparable.
 
 ### 20.10 Retrieval tuning and ablations (`bench tune`, 2026-10-29)
 
@@ -1638,7 +1638,7 @@ At least: validation on governed real data, with clinicians checking answers; a 
  
 **Next steps** 
 1. Return exact counts directly for count questions (no LLM needed). 
-2. Finish the judged answer runs (`scripts/run_d_loop.ps1`), or enable Gemini billing so they finish in one go. Then make parent-document context the default for answers (20.9). 
+2. Finish the judged answer runs (`scripts/run_d_loop.ps1`), or enable Gemini billing so they finish in one go. Then repeat the comparison with parent context, now the default (20.9). 
 3. Bedrock live test once AWS access is set up. 
 4. Consider `qwen3:1.7b` as the local default. 
 5. Fix audit findings 8-12. 
@@ -1756,6 +1756,7 @@ class Settings(BaseSettings):
  rerank_blend: str = "fuse" 
  rrf_k: int = 60 
  dense_weight: float = 0.5 # BM25 counts twice the dense ranking in the fusion (20.10) 
+ answer_context: str = "parent" # the LLM reads each source's whole record (20.9) 
  
  def index_path(self, provider=None, model=None) -> Path: 
  slug = f"{provider or self.embed_provider}__{model or self.embed_model}".replace("/", "_").replace(":", "_") 

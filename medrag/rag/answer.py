@@ -144,12 +144,12 @@ def build_prompt(question: str, r: Result, facts: str) -> str:
 
 
 class RAG:
-    def __init__(self, retriever: Retriever | None = None, llm: LLM | None = None, context: str = "chunk", log: bool = True):
-        """context: 'chunk' gives the LLM the retrieved chunks; 'parent' gives each chunk's whole record.
-        log: write the audit trail and request metrics (security/audit.py)."""
+    def __init__(self, retriever: Retriever | None = None, llm: LLM | None = None, context: str | None = None, log: bool = True):
+        """context: 'chunk' gives the LLM the retrieved chunks; 'parent' gives each chunk's whole record
+        (default: ANSWER_CONTEXT). log: write the audit trail and request metrics (security/audit.py)."""
         self.retriever = retriever or Retriever()
         self.llm = llm or get_llm()
-        self.context = context
+        self.context = context or get_settings().answer_context
         self.log = log
 
     @property

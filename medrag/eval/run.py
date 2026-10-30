@@ -168,7 +168,7 @@ def score_answer(it: dict, text: str) -> dict:
 
 
 def eval_generation(items: list[dict], retriever: Retriever, llm_specs: list[str], use_judge: bool = False,
-                    resume: Path | None = None, context: str = "chunk") -> pd.DataFrame:
+                    resume: Path | None = None, context: str | None = None) -> pd.DataFrame:
     """Answer every item with every LLM. With `resume` (a JSONL file), finished answers are kept across
     runs and skipped, so a run stopped by a daily free-tier quota continues where it stopped."""
     judge = get_judge() if use_judge else None

@@ -6,7 +6,8 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $env:PYTHONIOENCODING = 'utf-8'
 $env:JUDGE_MODEL = 'gemini-3.6-flash'
 $py = '.venv\Scripts\python.exe'
-$common = '--skip-retrieval', '--per-type', '20', '--max-answers', '54', '--judge'
+# The resume files were answered with chunk context; keep it so every answer of a model uses the same context.
+$common = '--skip-retrieval', '--per-type', '20', '--max-answers', '54', '--judge', '--context', 'chunk'
 $cloud = 'gemini:gemini-3.5-flash,gemini:gemini-3.5-flash-lite,gemini:gemini-3.1-flash-lite,gemini:gemini-3-flash-preview'
 $local = 'ollama:qwen3:1.7b,ollama:qwen2.5:3b'
 

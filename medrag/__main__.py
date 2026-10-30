@@ -349,7 +349,7 @@ def main():
     p.add_argument("--skip-generation", action="store_true")
     p.add_argument("--skip-retrieval", action="store_true", help="answers only (the retrieval scores take ~30 min on CPU)")
     p.add_argument("--resume", help="JSONL file of finished answers: kept across runs and skipped when re-run (quota-limited runs)")
-    p.add_argument("--context", choices=["chunk", "parent"], default="chunk", help="give the LLM the chunks, or each chunk's whole record")
+    p.add_argument("--context", choices=["chunk", "parent"], help="give the LLM the chunks, or each chunk's whole record (default: ANSWER_CONTEXT)")
     p.add_argument("--gate", help="baseline JSON: exit 1 if a metric falls below it by more than the tolerance")
     p.add_argument("--save-baseline", help="write this run's gate metrics as the new baseline JSON")
     p.set_defaults(fn=cmd_eval)

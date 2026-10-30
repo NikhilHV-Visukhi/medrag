@@ -191,7 +191,7 @@ Run with `python -m medrag bench embed|chunk|tune` (full tables in `PROJECT_REPO
 | qwen3:1.7b (laptop GPU) | 88% | 72% | 75% | **80%** | 31% | 4.2 |
 | qwen2.5:3b (laptop GPU, default) | 96% | 83% | 33% | **78%** | 10% | 3.9 |
 
-**Answer context:** giving the LLM each retrieved chunk's whole record (`eval --context parent`) instead of the chunk alone raises document answers from 83% to 93% correct (60 questions, Gemini 3.5 Flash-Lite; +0.10 [0.03-0.18] paired), mostly on long transcription notes, with citations just as precise.
+**Answer context:** giving the LLM each retrieved chunk's whole record (`eval --context parent`) instead of the chunk alone raises document answers from 83% to 93% correct (60 questions, Gemini 3.5 Flash-Lite; +0.10 [0.03-0.18] paired), mostly on long transcription notes, with citations just as precise. **Parent context is now the default** (`ANSWER_CONTEXT=chunk` restores the old behaviour).
 
 On a GPU the local models are nearly as fast as the cloud. qwen2.5:3b fails document content questions; qwen3:1.7b too often says "not found". LLM-judge scores are still pending: the Gemini free tier allowed only 40 of 324 judge calls.
 
